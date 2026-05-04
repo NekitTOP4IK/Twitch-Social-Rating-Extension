@@ -12,7 +12,9 @@ module.exports = (env = {}) => {
     devtool: isProd ? false : 'cheap-source-map',
     entry: {
       content: './src/content/index.ts',
-      background: './src/background/service-worker.ts',
+      background: isFirefox
+        ? './src/background/background-firefox.ts'
+        : './src/background/service-worker.ts',
       popup: './src/popup/popup.tsx',
     },
     output: {
@@ -37,6 +39,7 @@ module.exports = (env = {}) => {
         patterns: [
           { from: manifestFile, to: 'manifest.json' },
           { from: 'src/popup/popup.html', to: 'popup.html' },
+          { from: 'src/background/callback.html', to: 'callback.html' },
           { from: 'icon.png', to: 'icon.png' },
         ],
       }),

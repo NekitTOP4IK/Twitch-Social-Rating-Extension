@@ -166,7 +166,7 @@ function Popup() {
     (async () => {
       const auth = (await browser.runtime
         .sendMessage({ type: 'GET_AUTH' })
-        .catch(() => ({ authenticated: false, userLogin: null, avatarUrl: null }))) as AuthState;
+        .catch((e: unknown) => { console.error('[TSR popup] GET_AUTH error', e); return ({ authenticated: false, userLogin: null, avatarUrl: null }); })) as AuthState;
 
       let channelLogin: string | null = null;
       try {
@@ -187,7 +187,7 @@ function Popup() {
       if (auth.authenticated && channelLogin) {
         const res = (await browser.runtime
           .sendMessage({ type: 'GET_USER_RATING', channelLogin })
-          .catch(() => null)) as { score?: number } | null;
+          .catch((e: unknown) => { console.error('[TSR popup] GET_USER_RATING error', e); return null; })) as { score?: number } | null;
         if (cancelled) return;
         setState((p) => ({ ...p, channelRating: res?.score ?? null, ratingLoading: false }));
       }
@@ -199,7 +199,7 @@ function Popup() {
     setState((p) => ({ ...p, working: true }));
     const res = (await browser.runtime
       .sendMessage({ type: 'LOGIN' })
-      .catch(() => ({ success: false }))) as { success: boolean; userLogin?: string };
+      .catch((e: unknown) => { console.error('[TSR popup] LOGIN error', e); return ({ success: false }); })) as { success: boolean; userLogin?: string };
     setState((p) => ({
       ...p,
       working: false,
@@ -210,7 +210,7 @@ function Popup() {
   };
 
   const handleLogout = async () => {
-    await browser.runtime.sendMessage({ type: 'LOGOUT' }).catch(() => null);
+    await browser.runtime.sendMessage({ type: 'LOGOUT' }).catch((e: unknown) => { console.error('[TSR popup] LOGOUT error', e); });
     setState((p) => ({ ...p, auth: { authenticated: false, userLogin: null, avatarUrl: null }, channelRating: null }));
   };
 

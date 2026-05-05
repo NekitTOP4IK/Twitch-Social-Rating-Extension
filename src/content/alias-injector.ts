@@ -1,8 +1,18 @@
-import { getAlias, isAliased } from './alias-manager';
+import { getAlias, getAllAliases, isAliased } from './alias-manager';
 import { detectCardLogin } from './card-detector';
 
 const ALIASED_ATTR = 'data-tsr-aliased';
 const ORIGINAL_ATTR = 'data-tsr-original';
+const LOGIN_ATTR = 'data-tsr-login';
+const NATIVE_NAME_SELECTOR = [
+  '.chat-author__display-name',
+  '.message-author__display-name',
+  '.chatter-name',
+  '.autocomplete-match-list button[data-a-target^="@"] p',
+].join(', ');
+const NAME_SELECTOR = `${NATIVE_NAME_SELECTOR}, .seventv-chat-user-username`;
+const TOKEN_ORIGINAL_ATTR = 'data-tsr-original-token-text';
+const tokenTextOriginals = new WeakMap<Text, string>();
 
 // ── Core rewrite helpers ─────────────────────────────────────────────────────
 
@@ -31,8 +41,38 @@ function getTextNode(element: Element): Text | null {
   return null;
 }
 
+function normalizeLogin(login: string): string {
+  return login.trim().replace(/^@/, '').toLowerCase();
+}
+
+function getElementText(element: Element): string {
+  return (getTextNode(element)?.textContent ?? element.textContent ?? '').trim();
+}
+
+function getStoredLogin(element: Element): string | null {
+  const login = element.getAttribute(LOGIN_ATTR);
+  return login ? normalizeLogin(login) : null;
+}
+
+function getLoginFromNameElement(element: Element): string | null {
+  const stored = getStoredLogin(element);
+  const visible = getElementText(element);
+
+  if (stored) {
+    const storedAlias = getAlias(stored);
+    if (!storedAlias || visible === storedAlias || visible === element.getAttribute(ORIGINAL_ATTR)) {
+      return stored;
+    }
+  }
+
+  const login = normalizeLogin(visible);
+  return login || stored;
+}
+
 function rewriteText(element: Element, login: string): void {
-  const alias = getAlias(login);
+  const normalizedLogin = normalizeLogin(login);
+  const alias = getAlias(normalizedLogin);
+  element.setAttribute(LOGIN_ATTR, normalizedLogin);
   if (!alias) {
     restoreElement(element);
     return;
@@ -50,7 +90,40 @@ function rewriteText(element: Element, login: string): void {
     textNode.textContent = alias;
   }
   element.setAttribute(ALIASED_ATTR, 'true');
-  element.setAttribute('title', login); // browser-native tooltip with original login
+  element.setAttribute('title', normalizedLogin); // browser-native tooltip with original login
+}
+
+function getHrefLogin(element: Element): string | null {
+  const href = element.getAttribute('href') ?? '';
+  const m = href.match(/(?:^\/|twitch\.tv\/)([a-z0-9_]+)/i);
+  return m ? normalizeLogin(m[1]) : null;
+}
+
+function findNativeCardNameLink(cardEl: Element, login: string): Element | null {
+  const normalizedLogin = normalizeLogin(login);
+  const preferred = cardEl.querySelector('.viewer-card-header__display-name a.tw-link');
+  if (preferred) return preferred;
+
+  const links = cardEl.querySelectorAll('a.tw-link[href], a[href][data-tsr-login]');
+  for (const link of links) {
+    const stored = getStoredLogin(link);
+    const hrefLogin = getHrefLogin(link);
+    if (stored === normalizedLogin || hrefLogin === normalizedLogin) return link;
+  }
+
+  return null;
+}
+
+function findNativeCardLogin(cardEl: Element): string | null {
+  const links = cardEl.querySelectorAll('a[data-tsr-login], .viewer-card-header__display-name a[href], a.tw-link[href]');
+  for (const link of links) {
+    const stored = getStoredLogin(link);
+    const hrefLogin = getHrefLogin(link);
+    if (stored) return stored;
+    if (hrefLogin) return hrefLogin;
+  }
+
+  return null;
 }
 
 function restoreElement(element: Element): void {
@@ -63,6 +136,145 @@ function restoreElement(element: Element): void {
   element.removeAttribute(ALIASED_ATTR);
   element.removeAttribute(ORIGINAL_ATTR);
   element.removeAttribute('title');
+}
+
+function rewriteAliasTokens(element: Element): void {
+  const aliases = getAllAliases();
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let matchedLogin: string | null = null;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const original = tokenTextOriginals.get(node) ?? node.textContent ?? '';
+    let next = original;
+    let nodeMatchedLogin: string | null = null;
+
+    for (const [login, alias] of Object.entries(aliases)) {
+      const normalizedLogin = normalizeLogin(login);
+      if (!normalizedLogin || !alias) continue;
+
+      const regex = new RegExp(`\\b${escapeRegex(normalizedLogin)}\\b`, 'gi');
+      if (regex.test(next)) {
+        next = next.replace(regex, alias);
+        nodeMatchedLogin = normalizedLogin;
+      }
+    }
+
+    if (nodeMatchedLogin) {
+      if (!tokenTextOriginals.has(node)) tokenTextOriginals.set(node, original);
+      if (node.textContent !== next) node.textContent = next;
+      matchedLogin = nodeMatchedLogin;
+    } else if (tokenTextOriginals.has(node)) {
+      node.textContent = original;
+      tokenTextOriginals.delete(node);
+    }
+  }
+
+  if (!matchedLogin) {
+    element.removeAttribute(TOKEN_ORIGINAL_ATTR);
+    element.removeAttribute(ALIASED_ATTR);
+    element.removeAttribute(LOGIN_ATTR);
+    element.removeAttribute('title');
+    return;
+  }
+
+  element.setAttribute(TOKEN_ORIGINAL_ATTR, 'true');
+  element.setAttribute(ALIASED_ATTR, 'true');
+  element.setAttribute(LOGIN_ATTR, matchedLogin);
+  element.setAttribute('title', matchedLogin);
+}
+
+function rewriteMentionElement(element: Element): void {
+  const textNode = getTextNode(element);
+  if (!textNode) return;
+
+  const original = element.getAttribute(ORIGINAL_ATTR) ?? textNode.textContent ?? '';
+  const m = original.trim().match(/^@([a-zA-Z0-9_]+)$/);
+  if (!m) {
+    restoreElement(element);
+    return;
+  }
+
+  const login = normalizeLogin(m[1]);
+  const alias = getAlias(login);
+  element.setAttribute(LOGIN_ATTR, login);
+
+  if (!alias) {
+    restoreElement(element);
+    return;
+  }
+
+  if (!element.hasAttribute(ORIGINAL_ATTR)) element.setAttribute(ORIGINAL_ATTR, original);
+  textNode.textContent = `@${alias}`;
+  element.setAttribute(ALIASED_ATTR, 'true');
+  element.setAttribute('title', `@${login}`);
+}
+
+function rewriteReplyTextElement(element: Element): void {
+  const textNode = getTextNode(element);
+  if (!textNode) return;
+
+  const original = element.getAttribute(ORIGINAL_ATTR) ?? textNode.textContent ?? '';
+  const m = original.match(/^(Replying to\s+)@([a-zA-Z0-9_]+)(:\s*[\s\S]*)$/);
+  if (!m) {
+    restoreElement(element);
+    return;
+  }
+
+  const login = normalizeLogin(m[2]);
+  const alias = getAlias(login);
+  element.setAttribute(LOGIN_ATTR, login);
+
+  if (!alias) {
+    restoreElement(element);
+    return;
+  }
+
+  if (!element.hasAttribute(ORIGINAL_ATTR)) element.setAttribute(ORIGINAL_ATTR, original);
+  textNode.textContent = `${m[1]}@${alias}${m[3]}`;
+  element.setAttribute(ALIASED_ATTR, 'true');
+  element.setAttribute('title', `@${login}`);
+}
+
+function rewriteSevenTVMentionToken(token: Element): void {
+  const username = token.querySelector('.seventv-chat-user-username');
+  if (!username) return;
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(username, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (node.textContent?.trim()) textNodes.push(node);
+  }
+
+  const loginNode = textNodes.find((node) => node.textContent?.trim() !== '@');
+  if (!loginNode) return;
+
+  const original = username.getAttribute(ORIGINAL_ATTR) ?? loginNode.textContent ?? '';
+  const login = normalizeLogin(original);
+  if (!login) return;
+
+  const alias = getAlias(login);
+  username.setAttribute(LOGIN_ATTR, login);
+
+  if (!alias) {
+    if (username.hasAttribute(ALIASED_ATTR)) loginNode.textContent = original;
+    username.removeAttribute(ALIASED_ATTR);
+    username.removeAttribute(ORIGINAL_ATTR);
+    username.removeAttribute('title');
+    return;
+  }
+
+  if (!username.hasAttribute(ORIGINAL_ATTR)) username.setAttribute(ORIGINAL_ATTR, original);
+  if (loginNode.textContent !== alias) loginNode.textContent = alias;
+  username.setAttribute(ALIASED_ATTR, 'true');
+  username.setAttribute('title', `@${login}`);
+}
+
+function applyAliasesToSevenTVMentionTokens(root: ParentNode): void {
+  root.querySelectorAll('.mention-token').forEach((token) => {
+    rewriteSevenTVMentionToken(token);
+  });
 }
 
 function getLoginFromMessage(line: Element): string | null {
@@ -80,6 +292,12 @@ function getLoginFromMessage(line: Element): string | null {
     const detected = detectCardLogin(card);
     if (detected) return detected.login;
   }
+
+  if (line.matches(NAME_SELECTOR)) return getLoginFromNameElement(line);
+
+  const nameEl = line.querySelector(NAME_SELECTOR);
+  if (nameEl) return getLoginFromNameElement(nameEl);
+
   return null;
 }
 
@@ -89,11 +307,15 @@ export function applyAliasesToChatLine(line: Element): void {
   const login = getLoginFromMessage(line);
   if (!login) return;
 
-  const displayName = line.querySelector('.chat-author__display-name');
-  if (displayName) rewriteText(displayName, login);
+  const displayNames = line.matches(NATIVE_NAME_SELECTOR)
+    ? [line]
+    : Array.from(line.querySelectorAll(NATIVE_NAME_SELECTOR));
+  for (const displayName of displayNames) rewriteText(displayName, login);
 
   const seventvName = line.querySelector('.seventv-chat-user-username');
-  if (seventvName) rewriteText(seventvName, login);
+  if (seventvName && !seventvName.closest('.mention-token')) rewriteText(seventvName, login);
+
+  applyAliasesToSevenTVMentionTokens(line);
 
   const msgWrapper = line.closest('.chat-line__message');
   if (msgWrapper) {
@@ -123,26 +345,67 @@ export function applyAliasesToChatLine(line: Element): void {
 
   const mentions = line.querySelectorAll('.mention-fragment, [data-a-target="chat-message-mention"]');
   for (const mention of mentions) {
-    const textNode = getTextNode(mention);
-    if (!textNode) continue;
-    const text = textNode.textContent ?? '';
-    const m = text.match(/^@([a-zA-Z0-9_]+)$/);
-    if (!m) continue;
-    const mentionLogin = m[1].toLowerCase();
-    const alias = getAlias(mentionLogin);
-    if (alias) {
-      const original = mention.getAttribute(ORIGINAL_ATTR) ?? text;
-      if (!mention.hasAttribute(ORIGINAL_ATTR)) mention.setAttribute(ORIGINAL_ATTR, original);
-      textNode.textContent = `@${alias}`;
-      mention.setAttribute(ALIASED_ATTR, 'true');
-      mention.setAttribute('title', `@${mentionLogin}`);
-    }
+    rewriteMentionElement(mention);
   }
+}
+
+export function applyAliasesToPinnedChat(): void {
+  document.querySelectorAll('.pinned-chat__pinned-by').forEach((el) => {
+    rewriteAliasTokens(el);
+  });
+
+  document.querySelectorAll('.chatter-name').forEach((el) => {
+    applyAliasesToChatLine(el);
+  });
+}
+
+export function applyAliasesToAutocomplete(): void {
+  document.querySelectorAll('.autocomplete-match-list button[data-a-target^="@"]').forEach((button) => {
+    const target = button.getAttribute('data-a-target') ?? '';
+    const login = normalizeLogin(target);
+    if (!login) return;
+
+    const label = button.querySelector('p');
+    if (label) rewriteText(label, login);
+  });
+}
+
+export function applyAliasesToReplyPreviews(): void {
+  document.querySelectorAll('p span[dir="auto"]').forEach((span) => {
+    const text = getElementText(span);
+    if (/^@[a-zA-Z0-9_]+$/.test(text)) rewriteMentionElement(span);
+  });
+
+  document.querySelectorAll('.seventv-reply-message-part').forEach((el) => {
+    rewriteReplyTextElement(el);
+  });
+}
+
+export function applyAliasesToInlineCallouts(): void {
+  document.querySelectorAll('.inline-private-callout-line__icon').forEach((icon) => {
+    const callout = icon.parentElement;
+    if (!callout) return;
+
+    callout.querySelectorAll('span').forEach((span) => {
+      rewriteAliasTokens(span);
+    });
+  });
 }
 
 export function applyAliasesToAllChat(): void {
   const nativeLines = document.querySelectorAll('.chat-line__message');
   for (const line of nativeLines) applyAliasesToChatLine(line);
+
+  const nativeHistoryNames = document.querySelectorAll('.message-author__display-name');
+  for (const nameEl of nativeHistoryNames) {
+    if (nameEl.closest('.chat-line__message')) continue;
+    applyAliasesToChatLine(nameEl);
+  }
+
+  applyAliasesToPinnedChat();
+  applyAliasesToAutocomplete();
+  applyAliasesToReplyPreviews();
+  applyAliasesToInlineCallouts();
 
   const seventvMessages = document.querySelectorAll('.seventv-user-message');
   for (const msg of seventvMessages) {
@@ -155,8 +418,9 @@ export function applyAliasesToAllChat(): void {
         // Timeline message inside a 7TV user card — derive login from the card header
         const detected = detectCardLogin(card);
         if (detected) {
+          applyAliasesToSevenTVMentionTokens(msg);
           const nameEl = msg.querySelector('.seventv-chat-user-username');
-          if (nameEl) rewriteText(nameEl, detected.login);
+          if (nameEl && !nameEl.closest('.mention-token')) rewriteText(nameEl, detected.login);
         }
       } else {
         // Other standalone 7TV message (not in a card) — best-effort
@@ -164,7 +428,7 @@ export function applyAliasesToAllChat(): void {
         if (userBlock) {
           const nameEl = userBlock.querySelector('.seventv-chat-user-username');
           if (nameEl) {
-            const login = userBlock.getAttribute('data-a-user') ?? nameEl.textContent?.toLowerCase() ?? '';
+            const login = userBlock.getAttribute('data-a-user') ?? getLoginFromNameElement(nameEl) ?? '';
             if (login) rewriteText(nameEl, login);
           }
         }
@@ -177,9 +441,8 @@ export function applyAliasesToAllChat(): void {
 
 export function applyAliasesToViewerCard(cardEl: Element, login: string): void {
   const alias = getAlias(login);
-  if (!alias) return;
 
-  const nativeLink = cardEl.querySelector('.viewer-card-header__display-name a.tw-link');
+  const nativeLink = findNativeCardNameLink(cardEl, login);
   if (nativeLink) rewriteText(nativeLink, login);
 
   const seventvLink = cardEl.querySelector('.seventv-user-card-usertag');
@@ -191,7 +454,9 @@ export function applyAliasesToViewerCard(cardEl: Element, login: string): void {
   // 7TV card timeline messages (message history inside the card)
   const timelineList = cardEl.querySelector('.seventv-user-card-message-timeline-list');
   if (timelineList) {
+    applyAliasesToSevenTVMentionTokens(timelineList);
     timelineList.querySelectorAll('.seventv-chat-user-username').forEach((el) => {
+      if (el.closest('.mention-token')) return;
       rewriteText(el, login);
     });
   }
@@ -200,11 +465,32 @@ export function applyAliasesToViewerCard(cardEl: Element, login: string): void {
   if (followBtn) {
     const label = followBtn.getAttribute('aria-label');
     if (label) {
-      const regex = new RegExp(`\\b${escapeRegex(login)}\\b`, 'gi');
-      const newLabel = label.replace(regex, alias);
-      if (newLabel !== label) followBtn.setAttribute('aria-label', newLabel);
+      const original = followBtn.getAttribute(ORIGINAL_ATTR) ?? label;
+      if (!followBtn.hasAttribute(ORIGINAL_ATTR)) followBtn.setAttribute(ORIGINAL_ATTR, original);
+
+      if (alias) {
+        const regex = new RegExp(`\\b${escapeRegex(login)}\\b`, 'gi');
+        const newLabel = original.replace(regex, alias);
+        if (newLabel !== label) followBtn.setAttribute('aria-label', newLabel);
+      } else {
+        followBtn.setAttribute('aria-label', original);
+        followBtn.removeAttribute(ORIGINAL_ATTR);
+      }
     }
   }
+}
+
+export function applyAliasesToOpenCards(): void {
+  document.querySelectorAll('[class*="viewer-card-layer"], .viewer-card, .seventv-user-card').forEach((el) => {
+    const detected = detectCardLogin(el);
+    if (detected) {
+      applyAliasesToViewerCard(detected.element, detected.login);
+      return;
+    }
+
+    const login = findNativeCardLogin(el);
+    if (login) applyAliasesToViewerCard(el, login);
+  });
 }
 
 // ── Leaderboard rewriting ──────────────────────────────────────────────────
@@ -213,6 +499,7 @@ export function applyAliasesToLeaderboard(): void {
   const selectors = [
     '[data-test-selector="leaderboard-item-name-test-selector"]',
     '[class*="channelLeaderboardHeaderRunnerUpEntry__username"]',
+    '[class*="username--"]',
   ];
 
   for (const sel of selectors) {
@@ -273,6 +560,11 @@ export function scheduleBatchReapply(): void {
   if (batchTimer) clearTimeout(batchTimer);
   batchTimer = setTimeout(() => {
     applyAliasesToAllChat();
+    applyAliasesToOpenCards();
+    applyAliasesToPinnedChat();
+    applyAliasesToAutocomplete();
+    applyAliasesToReplyPreviews();
+    applyAliasesToInlineCallouts();
     applyAliasesToLeaderboard();
     applyAliasesToSideNav();
   }, 50);

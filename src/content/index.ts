@@ -15,6 +15,11 @@ import {
   applyAliasesToLeaderboard,
   applyAliasesToSideNav,
   applyAliasesToViewerCard,
+  applyAliasesToOpenCards,
+  applyAliasesToPinnedChat,
+  applyAliasesToAutocomplete,
+  applyAliasesToReplyPreviews,
+  applyAliasesToInlineCallouts,
   injectCardAliasControls,
   removeCardAliasControls,
   scheduleBatchReapply,
@@ -44,10 +49,23 @@ function getCurrentChannel(): string {
 }
 
 const processing = new WeakSet<Element>();
+const NAME_SELECTOR = [
+  '.chat-author__display-name',
+  '.message-author__display-name',
+  '.chatter-name',
+  '.autocomplete-match-list button[data-a-target^="@"] p',
+  'p span[dir="auto"]',
+  '.seventv-reply-message-part',
+  '.seventv-chat-user-username',
+].join(', ');
 
 async function handleElement(el: Element): Promise<void> {
   const card = detectCardLogin(el);
   if (!card) return;
+
+  // Keep visible usernames seamless; rating fetch/injection can finish later.
+  applyAliasesToViewerCard(card.element, card.login);
+
   if (processing.has(card.element)) return;
   processing.add(card.element);
   try {
@@ -57,9 +75,6 @@ async function handleElement(el: Element): Promise<void> {
     debug('content', 'handleElement rating=', rating);
     await injectBadge(card, rating, channel);
 
-    // Apply alias to card username immediately
-    applyAliasesToViewerCard(card.element, card.login);
-
     // Inject edit/reset controls into the card
     injectCardAliasControls(
       card.element,
@@ -67,15 +82,46 @@ async function handleElement(el: Element): Promise<void> {
       async (login, alias) => {
         await setAlias(login, alias);
         scheduleBatchReapply();
+        refreshOpenCardAliases();
       },
       async (login) => {
         await removeAlias(login);
         scheduleBatchReapply();
+        refreshOpenCardAliases();
       },
     );
+
+    // Alias state may arrive while rating is loading; enforce it again after card UI work.
+    applyAliasesToViewerCard(card.element, card.login);
   } finally {
     processing.delete(card.element);
   }
+}
+
+function refreshOpenCardAliases(): void {
+  applyAliasesToOpenCards();
+
+  document.querySelectorAll('[class*="viewer-card-layer"], .seventv-user-card').forEach((el) => {
+    const detected = detectCardLogin(el);
+    if (!detected) return;
+
+    applyAliasesToViewerCard(detected.element, detected.login);
+    removeCardAliasControls(detected.element);
+    injectCardAliasControls(
+      detected.element,
+      detected.login,
+      async (login, alias) => {
+        await setAlias(login, alias);
+        scheduleBatchReapply();
+        refreshOpenCardAliases();
+      },
+      async (login) => {
+        await removeAlias(login);
+        scheduleBatchReapply();
+        refreshOpenCardAliases();
+      },
+    );
+  });
 }
 
 function observe(): void {
@@ -101,20 +147,39 @@ function observe(): void {
         }
         node.querySelectorAll('.chat-line__message').forEach((el) => newChatLines.add(el));
 
+        // Native message history and other username-only fragments.
+        if (node.matches(NAME_SELECTOR)) {
+          newChatLines.add(node);
+        }
+        node.querySelectorAll(NAME_SELECTOR).forEach((el) => newChatLines.add(el));
+
+        // Pinned chat and autocomplete mention tray contain username text outside normal chat lines.
+        if (
+          node.matches('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list') ||
+          node.matches('.inline-private-callout-line__icon') ||
+          node.matches('p span[dir="auto"], .seventv-reply-message-part') ||
+          node.querySelector('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list, .inline-private-callout-line__icon, p span[dir="auto"], .seventv-reply-message-part')
+        ) {
+          scheduleBatchReapply();
+        }
+
         // Chat lines (7TV standalone)
         if (node.classList.contains('seventv-user-message')) {
           const wrapper = node.closest('.chat-line__message');
           if (wrapper) newChatLines.add(wrapper);
+          if (!wrapper) newChatLines.add(node);
         }
         node.querySelectorAll('.seventv-user-message').forEach((el) => {
           const wrapper = el.closest('.chat-line__message');
           if (wrapper) newChatLines.add(wrapper);
+          if (!wrapper) newChatLines.add(el);
         });
 
         // Leaderboard
         if (
           node.matches?.('[data-test-selector="leaderboard-item-name-test-selector"]') ||
-          node.querySelector('[data-test-selector="leaderboard-item-name-test-selector"]')
+          node.matches?.('[class*="channelLeaderboardHeaderRunnerUpEntry__username"], [class*="username--"]') ||
+          node.querySelector('[data-test-selector="leaderboard-item-name-test-selector"], [class*="channelLeaderboardHeaderRunnerUpEntry__username"], [class*="username--"]')
         ) {
           scheduleBatchReapply();
         }
@@ -140,7 +205,7 @@ function observe(): void {
 
       // Re-apply aliases inside existing cards when Vue/Twitch re-renders content
       if (mutation.type === 'childList' && mutation.target instanceof Element) {
-        const card = mutation.target.closest('.seventv-user-card, .viewer-card');
+        const card = mutation.target.closest('.seventv-user-card, .viewer-card, [class*="viewer-card-layer"]');
         if (card) cardsToReapply.add(card);
 
         // Vue may swap text nodes inside username spans — queue the parent line
@@ -148,10 +213,12 @@ function observe(): void {
         const isUserNameSpan =
           target.classList?.contains('seventv-chat-user-username') ||
           target.classList?.contains('chat-author__display-name') ||
+          target.classList?.contains('message-author__display-name') ||
           target.closest('.seventv-chat-user-username') != null ||
-          target.closest('.chat-author__display-name') != null;
+          target.closest('.chat-author__display-name') != null ||
+          target.closest('.message-author__display-name') != null;
         if (isUserNameSpan) {
-          const line = target.closest('.chat-line__message, .seventv-user-message');
+          const line = target.closest('.chat-line__message, .seventv-user-message') ?? target.closest(NAME_SELECTOR);
           if (line) chatLinesToReapply.add(line);
         }
       }
@@ -163,10 +230,12 @@ function observe(): void {
           const isUserNameSpan =
             parent.classList?.contains('seventv-chat-user-username') ||
             parent.classList?.contains('chat-author__display-name') ||
+            parent.classList?.contains('message-author__display-name') ||
             parent.closest('.seventv-chat-user-username') != null ||
-            parent.closest('.chat-author__display-name') != null;
+            parent.closest('.chat-author__display-name') != null ||
+            parent.closest('.message-author__display-name') != null;
           if (isUserNameSpan) {
-            const line = parent.closest('.chat-line__message, .seventv-user-message');
+            const line = parent.closest('.chat-line__message, .seventv-user-message') ?? parent.closest(NAME_SELECTOR);
             if (line) chatLinesToReapply.add(line);
           }
         }
@@ -180,7 +249,11 @@ function observe(): void {
       requestAnimationFrame(() => {
         for (const card of cards) {
           const detected = detectCardLogin(card);
-          if (!detected) continue;
+          if (!detected) {
+            applyAliasesToOpenCards();
+            continue;
+          }
+
           applyAliasesToViewerCard(detected.element, detected.login);
           if (!detected.element.querySelector('[data-tsr-alias-controls]')) {
             injectCardAliasControls(
@@ -189,10 +262,12 @@ function observe(): void {
               async (login, alias) => {
                 await setAlias(login, alias);
                 scheduleBatchReapply();
+                refreshOpenCardAliases();
               },
               async (login) => {
                 await removeAlias(login);
                 scheduleBatchReapply();
+                refreshOpenCardAliases();
               },
             );
           }
@@ -256,6 +331,11 @@ function watchNavigation(): void {
   await initAliasManager();
 
   applyAliasesToAllChat();
+  applyAliasesToOpenCards();
+  applyAliasesToPinnedChat();
+  applyAliasesToAutocomplete();
+  applyAliasesToReplyPreviews();
+  applyAliasesToInlineCallouts();
   applyAliasesToLeaderboard();
   applyAliasesToSideNav();
 
@@ -265,5 +345,6 @@ function watchNavigation(): void {
 
   onAliasChange(() => {
     scheduleBatchReapply();
+    refreshOpenCardAliases();
   });
 })();

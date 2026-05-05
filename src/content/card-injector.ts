@@ -83,22 +83,25 @@ function ensureSeventvStyle(): void {
   // header grows — causing the message list to overflow the card boundary.
   // Adding height: 48rem makes the grid deterministic so 1fr works correctly.
   style.textContent = `
-    /* Fix 1: make card height deterministic so 1fr works */
+    /* Fix 1: cap card height at 80vh so it doesn't grow endlessly,
+       but still lets it stay compact when the timeline is short. */
     .seventv-user-card-container:has([data-tsr-badge]) .seventv-user-card {
-      height: 48rem !important;
+      max-height: 80vh !important;
       overflow: hidden !important;
     }
 
-    /* Fix 2: data area must be able to shrink — fr tracks default to min-content sizing */
+    /* Fix 2: data area must be able to shrink — flex/grid min-height defaults
+       to auto, which prevents the row from collapsing when the header grows. */
     .seventv-user-card-container:has([data-tsr-badge]) .seventv-user-card-data {
       min-height: 0 !important;
       overflow: hidden !important;
-      grid-template-rows: minmax(0, 0.5fr) minmax(0, 2.5fr) !important;
     }
 
-    /* Fix 3: scrollable container inside data must report min-content = 0 */
+    /* Fix 3: the scrollable timeline container needs min-height: 0 and
+       explicit overflow-y so it scrolls instead of expanding the card. */
     .seventv-user-card-container:has([data-tsr-badge]) .seventv-user-card-data .scrollable-container {
       min-height: 0 !important;
+      overflow-y: auto !important;
     }
 
     /* Fix 4: add our badge as a named grid area between actions and mod */

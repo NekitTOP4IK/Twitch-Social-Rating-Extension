@@ -9,3 +9,10 @@ export interface AuthTokens {
   refreshToken: string;
   expiresAt: number;
 }
+
+export interface AliasEntry {
+  login: string;
+  alias: string;
+}
+
+export type AliasMap = Record<string, string>;

@@ -8,7 +8,13 @@ type Message =
   | { type: 'LOGOUT' }
   | { type: 'GET_USER_RATING'; channelLogin: string }
   | { type: 'FETCH_RATING'; login: string; channelLogin: string }
-  | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 };
+  | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 }
+  | { type: 'GET_ALIASES' }
+  | { type: 'SET_ALIAS'; login: string; alias: string }
+  | { type: 'DELETE_ALIAS'; login: string }
+  | { type: 'EXPORT_ALIASES' }
+  | { type: 'IMPORT_ALIASES'; data: Array<{ login: string; alias: string }> }
+  | { type: 'SYNC_ALIASES' };
 
 interface StoredAuth {
   accessToken?: string;
@@ -18,19 +24,24 @@ interface StoredAuth {
   avatarUrl?: string;
 }
 
-async function getStored(): Promise<StoredAuth> {
+interface StoredAliases {
+  aliases?: Record<string, string>;
+  aliasesSyncedAt?: number;
+}
+
+async function getStored(): Promise<StoredAuth & StoredAliases> {
   return browser.storage.local.get([
     'accessToken',
     'refreshToken',
     'expiresAt',
     'userLogin',
     'avatarUrl',
-  ]) as Promise<StoredAuth>;
+    'aliases',
+    'aliasesSyncedAt',
+  ]) as Promise<StoredAuth & StoredAliases>;
 }
 
 async function login(): Promise<{ success: boolean; userLogin?: string }> {
-  // Backend must redirect to this URI with tokens in the fragment after OAuth
-  // e.g. GET /auth/twitch?extension_redirect_uri=<redirectUri>
   const redirectUri = browser.identity.getRedirectURL('callback');
   const authUrl =
     `${BACKEND_URL}/auth/twitch` +
@@ -43,7 +54,6 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
     });
 
     const url = new URL(responseUrl);
-    // Backend returns tokens in fragment: #access_token=...&refresh_token=...&login=...
     const params = new URLSearchParams(
       url.hash ? url.hash.slice(1) : url.search.slice(1),
     );
@@ -63,6 +73,10 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
       userLogin,
       avatarUrl,
     });
+
+    // Sync aliases after successful login
+    await syncAliasesWithServer();
+
     return { success: true, userLogin };
   } catch {
     return { success: false };
@@ -107,7 +121,6 @@ async function refreshToken(): Promise<string | null> {
 async function getValidToken(): Promise<string | null> {
   const { accessToken, expiresAt } = await getStored();
   if (!accessToken) return null;
-  // Refresh 60s before expiry
   if (!expiresAt || Date.now() > expiresAt - 60_000) {
     return refreshToken();
   }
@@ -175,6 +188,183 @@ async function castVote(
   }
 }
 
+// ── Alias helpers ────────────────────────────────────────────────────────────
+
+async function getAliases(): Promise<Record<string, string>> {
+  const { aliases } = await getStored();
+  return aliases ?? {};
+}
+
+async function setAlias(login: string, alias: string): Promise<{ ok: boolean; error?: string }> {
+  const normalizedLogin = login.toLowerCase().trim();
+  const trimmedAlias = alias.trim();
+
+  // Save locally first (offline-first)
+  const { aliases } = await getStored();
+  const next = { ...(aliases ?? {}) };
+  if (!trimmedAlias || trimmedAlias.toLowerCase() === normalizedLogin) {
+    delete next[normalizedLogin];
+  } else {
+    next[normalizedLogin] = trimmedAlias;
+  }
+  await browser.storage.local.set({ aliases: next });
+
+  // Sync to server if authenticated
+  const token = await getValidToken();
+  if (token) {
+    try {
+      const res = await fetch(`${BACKEND_URL}/aliases`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ target_login: normalizedLogin, alias: trimmedAlias }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return { ok: false, error: err.detail ?? String(res.status) };
+      }
+    } catch {
+      // Network error — local alias is already saved, will retry on next sync
+    }
+  }
+
+  return { ok: true };
+}
+
+async function deleteAlias(login: string): Promise<{ ok: boolean; error?: string }> {
+  const normalizedLogin = login.toLowerCase().trim();
+
+  const { aliases } = await getStored();
+  const next = { ...(aliases ?? {}) };
+  delete next[normalizedLogin];
+  await browser.storage.local.set({ aliases: next });
+
+  const token = await getValidToken();
+  if (token) {
+    try {
+      const res = await fetch(`${BACKEND_URL}/aliases/${encodeURIComponent(normalizedLogin)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok && res.status !== 404) {
+        const err = await res.json().catch(() => ({}));
+        return { ok: false, error: err.detail ?? String(res.status) };
+      }
+    } catch {
+      // Network error — local alias is already removed, will retry on next sync
+    }
+  }
+
+  return { ok: true };
+}
+
+async function exportAliases(): Promise<{ data: Array<{ login: string; alias: string }>; count: number }> {
+  const aliases = await getAliases();
+  const data = Object.entries(aliases).map(([login, alias]) => ({ login, alias }));
+  return { data, count: data.length };
+}
+
+async function importAliases(
+  items: Array<{ login: string; alias: string }>,
+): Promise<{ ok: boolean; imported: number; error?: string }> {
+  const aliases = await getAliases();
+  const next = { ...aliases };
+  let imported = 0;
+
+  for (const item of items) {
+    const login = item.login.toLowerCase().trim();
+    const alias = item.alias.trim();
+    if (!login || !alias) continue;
+    next[login] = alias;
+    imported++;
+  }
+
+  await browser.storage.local.set({ aliases: next });
+
+  // Sync to server if authenticated (batch)
+  const token = await getValidToken();
+  if (token) {
+    try {
+      const payload = Object.entries(next).map(([login, alias]) => ({ target_login: login, alias }));
+      const res = await fetch(`${BACKEND_URL}/aliases/import`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ aliases: payload }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return { ok: false, error: err.detail ?? String(res.status), imported };
+      }
+      await browser.storage.local.set({ aliasesSyncedAt: Date.now() });
+    } catch {
+      return { ok: true, imported };
+    }
+  }
+
+  return { ok: true, imported };
+}
+
+async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: string }> {
+  const token = await getValidToken();
+  if (!token) return { ok: false, error: 'not_authenticated' };
+
+  try {
+    // Fetch server aliases
+    const res = await fetch(`${BACKEND_URL}/aliases`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { ok: false, error: err.detail ?? String(res.status) };
+    }
+    const serverData = (await res.json()) as Array<{ target_login: string; alias: string }>;
+
+    // Merge: server wins (they're the authoritative source for authenticated users)
+    const merged: Record<string, string> = {};
+    for (const item of serverData) {
+      if (item.target_login && item.alias) {
+        merged[item.target_login.toLowerCase()] = item.alias;
+      }
+    }
+
+    // Also include any local aliases that aren't on server yet (push them)
+    const { aliases: localAliases } = await getStored();
+    const toPush: Array<{ target_login: string; alias: string }> = [];
+    if (localAliases) {
+      for (const [login, alias] of Object.entries(localAliases)) {
+        if (!merged[login]) {
+          merged[login] = alias;
+          toPush.push({ target_login: login, alias });
+        }
+      }
+    }
+
+    // Push missing local aliases to server
+    if (toPush.length > 0) {
+      await fetch(`${BACKEND_URL}/aliases/import`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ aliases: toPush }),
+      }).catch(() => {});
+    }
+
+    await browser.storage.local.set({ aliases: merged, aliasesSyncedAt: Date.now() });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
+}
+
+// ── Message dispatcher ────────────────────────────────────────────────────────
+
 browser.runtime.onMessage.addListener(
   (message: unknown, _sender: browser.Runtime.MessageSender, sendResponse: (r: unknown) => void) => {
     const msg = message as Message;
@@ -208,6 +398,39 @@ browser.runtime.onMessage.addListener(
       case 'CAST_VOTE':
         castVote(msg.login, msg.channelLogin, msg.value).then(sendResponse);
         return true;
+
+      case 'GET_ALIASES':
+        getAliases().then((aliases) => sendResponse({ aliases }));
+        return true;
+
+      case 'SET_ALIAS':
+        setAlias(msg.login, msg.alias).then(sendResponse);
+        return true;
+
+      case 'DELETE_ALIAS':
+        deleteAlias(msg.login).then(sendResponse);
+        return true;
+
+      case 'EXPORT_ALIASES':
+        exportAliases().then(sendResponse);
+        return true;
+
+      case 'IMPORT_ALIASES':
+        importAliases(msg.data).then(sendResponse);
+        return true;
+
+      case 'SYNC_ALIASES':
+        syncAliasesWithServer().then(sendResponse);
+        return true;
     }
   },
 );
+
+// ── Sync aliases on startup if authenticated ────────────────────────────────
+
+(async () => {
+  const { accessToken } = await getStored();
+  if (accessToken) {
+    await syncAliasesWithServer().catch(() => {});
+  }
+})();

@@ -80,6 +80,46 @@ describe('alias injector', () => {
     expect(name.getAttribute('data-tsr-login')).toBe('otheruser');
   });
 
+  it('rewrites a standalone 7TV username component when the username span itself is queued', () => {
+    const name = el(`
+      <span class="seventv-chat-user-username">
+        <span><span>kanoyo_993</span></span>
+      </span>
+    `);
+
+    setAliases({ kanoyo_993: 'CaveCoder' });
+    applyAliasesToChatLine(name);
+
+    expect(name.textContent?.trim()).toBe('CaveCoder');
+    expect(name.getAttribute('data-tsr-login')).toBe('kanoyo_993');
+  });
+
+  it('rewrites 7TV pin confirmation prompt username', () => {
+    document.body.innerHTML = `
+      <main class="seventv-confirm-prompt">
+        <div class="seventv-confirm-prompt-body">
+          Are you sure you want to pin this message by
+          <div class="seventv-chat-user" style="color: rgb(153, 153, 255);">
+            <span class="seventv-chat-user-username">
+              <span><span>kanoyo_993</span></span>
+            </span>
+          </div>
+          ?
+        </div>
+      </main>
+    `;
+
+    setAliases({ kanoyo_993: 'CaveCoder' });
+    applyAliasesToAllChat();
+
+    const body = document.querySelector('.seventv-confirm-prompt-body') as Element;
+    const name = body.querySelector('.seventv-chat-user-username') as Element;
+    expect(name.textContent?.trim()).toBe('CaveCoder');
+    expect(name.getAttribute('data-tsr-login')).toBe('kanoyo_993');
+    expect(body.textContent).toContain('Are you sure you want to pin this message by');
+    expect(body.textContent).toContain('?');
+  });
+
   it('restores native viewer card name and labels when an alias is removed', () => {
     const card = el(`
       <div class="viewer-card-layer">

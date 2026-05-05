@@ -20,6 +20,7 @@ import {
   applyAliasesToAutocomplete,
   applyAliasesToReplyPreviews,
   applyAliasesToInlineCallouts,
+  applyAliasesToSevenTVPrompts,
   injectCardAliasControls,
   removeCardAliasControls,
   scheduleBatchReapply,
@@ -56,6 +57,7 @@ const NAME_SELECTOR = [
   '.autocomplete-match-list button[data-a-target^="@"] p',
   'p span[dir="auto"]',
   '.seventv-reply-message-part',
+  '.seventv-confirm-prompt-body .seventv-chat-user-username',
   '.seventv-chat-user-username',
 ].join(', ');
 
@@ -157,8 +159,8 @@ function observe(): void {
         if (
           node.matches('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list') ||
           node.matches('.inline-private-callout-line__icon') ||
-          node.matches('p span[dir="auto"], .seventv-reply-message-part') ||
-          node.querySelector('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list, .inline-private-callout-line__icon, p span[dir="auto"], .seventv-reply-message-part')
+          node.matches('p span[dir="auto"], .seventv-reply-message-part, .seventv-confirm-prompt-body') ||
+          node.querySelector('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list, .inline-private-callout-line__icon, p span[dir="auto"], .seventv-reply-message-part, .seventv-confirm-prompt-body')
         ) {
           scheduleBatchReapply();
         }
@@ -336,6 +338,7 @@ function watchNavigation(): void {
   applyAliasesToAutocomplete();
   applyAliasesToReplyPreviews();
   applyAliasesToInlineCallouts();
+  applyAliasesToSevenTVPrompts();
   applyAliasesToLeaderboard();
   applyAliasesToSideNav();
 

@@ -312,7 +312,9 @@ export function applyAliasesToChatLine(line: Element): void {
     : Array.from(line.querySelectorAll(NATIVE_NAME_SELECTOR));
   for (const displayName of displayNames) rewriteText(displayName, login);
 
-  const seventvName = line.querySelector('.seventv-chat-user-username');
+  const seventvName = line.matches('.seventv-chat-user-username')
+    ? line
+    : line.querySelector('.seventv-chat-user-username');
   if (seventvName && !seventvName.closest('.mention-token')) rewriteText(seventvName, login);
 
   applyAliasesToSevenTVMentionTokens(line);
@@ -392,6 +394,13 @@ export function applyAliasesToInlineCallouts(): void {
   });
 }
 
+export function applyAliasesToSevenTVPrompts(): void {
+  document.querySelectorAll('.seventv-confirm-prompt-body .seventv-chat-user-username').forEach((nameEl) => {
+    const login = getLoginFromNameElement(nameEl);
+    if (login) rewriteText(nameEl, login);
+  });
+}
+
 export function applyAliasesToAllChat(): void {
   const nativeLines = document.querySelectorAll('.chat-line__message');
   for (const line of nativeLines) applyAliasesToChatLine(line);
@@ -406,6 +415,7 @@ export function applyAliasesToAllChat(): void {
   applyAliasesToAutocomplete();
   applyAliasesToReplyPreviews();
   applyAliasesToInlineCallouts();
+  applyAliasesToSevenTVPrompts();
 
   const seventvMessages = document.querySelectorAll('.seventv-user-message');
   for (const msg of seventvMessages) {
@@ -565,6 +575,7 @@ export function scheduleBatchReapply(): void {
     applyAliasesToAutocomplete();
     applyAliasesToReplyPreviews();
     applyAliasesToInlineCallouts();
+    applyAliasesToSevenTVPrompts();
     applyAliasesToLeaderboard();
     applyAliasesToSideNav();
   }, 50);

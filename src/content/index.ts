@@ -1,3 +1,4 @@
+import { debug, error } from '../utils/logger';
 import { detectCardLogin } from './card-detector';
 import { injectBadge, updateBadgeScore } from './card-injector';
 import { fetchRating } from './api';
@@ -21,17 +22,25 @@ import {
 
 function getCurrentChannel(): string {
   const { hostname, pathname } = window.location;
+  debug('content', 'getCurrentChannel hostname=', hostname, 'pathname=', pathname);
 
   if (hostname === 'dashboard.twitch.tv') {
     const m = pathname.match(/\/(?:popout\/)?u\/([a-z0-9_]+)/i);
-    return m ? m[1].toLowerCase() : '';
+    const ch = m ? m[1].toLowerCase() : '';
+    debug('content', 'dashboard channel=', ch);
+    return ch;
   }
 
   const modMatch = pathname.match(/^\/(?:popout\/)?moderator\/([a-z0-9_]+)/i);
-  if (modMatch) return modMatch[1].toLowerCase();
+  if (modMatch) {
+    debug('content', 'moderator channel=', modMatch[1].toLowerCase());
+    return modMatch[1].toLowerCase();
+  }
 
   const m = pathname.match(/^\/([a-z0-9_]+)/i);
-  return m ? m[1].toLowerCase() : '';
+  const ch = m ? m[1].toLowerCase() : '';
+  debug('content', 'channel=', ch);
+  return ch;
 }
 
 const processing = new WeakSet<Element>();
@@ -43,7 +52,9 @@ async function handleElement(el: Element): Promise<void> {
   processing.add(card.element);
   try {
     const channel = getCurrentChannel();
+    debug('content', 'handleElement card.login=', card.login, 'channel=', channel, 'type=', card.type);
     const rating = await fetchRating(card.login, channel);
+    debug('content', 'handleElement rating=', rating);
     await injectBadge(card, rating, channel);
 
     // Apply alias to card username immediately
@@ -72,7 +83,7 @@ function observe(): void {
   const cardsToReapply = new Set<Element>();
 
   const observer = new MutationObserver((mutations) => {
-    const newChatLines: Element[] = [];
+    const newChatLines = new Set<Element>();
 
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
@@ -86,18 +97,18 @@ function observe(): void {
 
         // Chat lines (native)
         if (node.classList.contains('chat-line__message')) {
-          newChatLines.push(node);
+          newChatLines.add(node);
         }
-        node.querySelectorAll('.chat-line__message').forEach((el) => newChatLines.push(el));
+        node.querySelectorAll('.chat-line__message').forEach((el) => newChatLines.add(el));
 
         // Chat lines (7TV standalone)
         if (node.classList.contains('seventv-user-message')) {
           const wrapper = node.closest('.chat-line__message');
-          if (wrapper && !newChatLines.includes(wrapper)) newChatLines.push(wrapper);
+          if (wrapper) newChatLines.add(wrapper);
         }
         node.querySelectorAll('.seventv-user-message').forEach((el) => {
           const wrapper = el.closest('.chat-line__message');
-          if (wrapper && !newChatLines.includes(wrapper)) newChatLines.push(wrapper);
+          if (wrapper) newChatLines.add(wrapper);
         });
 
         // Leaderboard
@@ -190,7 +201,7 @@ function observe(): void {
     }
 
     // Batch-apply aliases to new chat lines
-    if (newChatLines.length > 0) {
+    if (newChatLines.size > 0) {
       requestAnimationFrame(() => {
         for (const line of newChatLines) {
           applyAliasesToChatLine(line);
@@ -241,6 +252,7 @@ function watchNavigation(): void {
 // ── Startup ─────────────────────────────────────────────────────────────────
 
 (async () => {
+  debug('content', 'startup BACKEND_URL=', (window as any).__BACKEND_URL__ ?? 'n/a');
   await initAliasManager();
 
   applyAliasesToAllChat();

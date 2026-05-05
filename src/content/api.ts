@@ -1,20 +1,22 @@
 import browser from 'webextension-polyfill';
+import { debug, error } from '../utils/logger';
 import { RatingData } from '../types';
-
-const BASE_URL = 'http://localhost:8000';
 
 export async function fetchRating(
   login: string,
   channelLogin: string,
 ): Promise<RatingData | null> {
+  debug('api', 'fetchRating login=', login, 'channel=', channelLogin);
   try {
     const result = await browser.runtime.sendMessage({
       type: 'FETCH_RATING',
       login,
       channelLogin,
     });
+    debug('api', 'fetchRating result=', result);
     return (result as RatingData | null) ?? null;
-  } catch {
+  } catch (e) {
+    error('api', 'fetchRating error:', e);
     return null;
   }
 }

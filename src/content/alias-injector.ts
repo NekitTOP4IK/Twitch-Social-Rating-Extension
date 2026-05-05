@@ -298,6 +298,107 @@ function makeIconBtn(svg: string, color: string, hoverColor: string, title: stri
   return btn;
 }
 
+function showInlineAliasForm(
+  btnWrap: HTMLElement,
+  login: string,
+  currentAlias: string | undefined,
+  onSave: (alias: string) => void,
+): void {
+  if (btnWrap.querySelector('[data-tsr-alias-input]')) return;
+
+  // Hide existing icon buttons while editing
+  const icons = Array.from(btnWrap.querySelectorAll<HTMLElement>('button'));
+  icons.forEach((b) => { b.style.display = 'none'; });
+
+  // Block all pointer events on the entire form wrapper so the parent <a>
+  // (seventv-user-card-usertag) never receives mousedown/pointerdown/click.
+  const blockEvent = (e: Event) => { e.stopPropagation(); e.preventDefault(); };
+  for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
+    btnWrap.addEventListener(ev, blockEvent);
+  }
+
+  const input = document.createElement('input');
+  input.setAttribute('data-tsr-alias-input', '');
+  input.type = 'text';
+  input.value = currentAlias ?? '';
+  input.placeholder = 'Новый ник…';
+  input.style.cssText = [
+    'font-size:12px',
+    'background:#18181b',
+    'color:#efeff1',
+    'border:1px solid #3a3a3d',
+    'border-radius:4px',
+    'padding:2px 6px',
+    'outline:none',
+    'width:92px',
+    'height:22px',
+    'box-sizing:border-box',
+    'vertical-align:middle',
+    'margin-left:4px',
+  ].join(';');
+  input.addEventListener('focus', () => { input.style.borderColor = '#7d7d87'; });
+  input.addEventListener('blur', () => { input.style.borderColor = '#3a3a3d'; });
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') cleanup();
+  });
+
+  const BTN_BASE = [
+    'display:inline-flex',
+    'align-items:center',
+    'justify-content:center',
+    'height:22px',
+    'min-width:26px',
+    'padding:0 5px',
+    'border-radius:4px',
+    'border:1px solid transparent',
+    'cursor:pointer',
+    'font-size:14px',
+    'font-weight:700',
+    'line-height:1',
+    'vertical-align:middle',
+    'margin-left:3px',
+  ].join(';');
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent = '✓';
+  confirmBtn.style.cssText = `${BTN_BASE};background:#00e67618;border-color:#00e67650;color:#00e676;`;
+  confirmBtn.addEventListener('mouseover', () => { confirmBtn.style.background = '#00e67630'; });
+  confirmBtn.addEventListener('mouseout', () => { confirmBtn.style.background = '#00e67618'; });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '✕';
+  cancelBtn.style.cssText = `${BTN_BASE};background:#ffffff08;border-color:#3a3a3d;color:#7d7d87;`;
+  cancelBtn.addEventListener('mouseover', () => { cancelBtn.style.background = '#ffffff14'; cancelBtn.style.color = '#adadb8'; });
+  cancelBtn.addEventListener('mouseout', () => { cancelBtn.style.background = '#ffffff08'; cancelBtn.style.color = '#7d7d87'; });
+
+  const cleanup = () => {
+    input.remove();
+    confirmBtn.remove();
+    cancelBtn.remove();
+    icons.forEach((b) => { b.style.display = ''; });
+    for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
+      btnWrap.removeEventListener(ev, blockEvent);
+    }
+  };
+
+  const save = () => {
+    const val = input.value.trim();
+    cleanup();
+    onSave(val);
+  };
+
+  confirmBtn.addEventListener('click', () => save());
+  cancelBtn.addEventListener('click', () => cleanup());
+
+  btnWrap.appendChild(input);
+  btnWrap.appendChild(confirmBtn);
+  btnWrap.appendChild(cancelBtn);
+
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+
 export function injectCardAliasControls(
   cardEl: Element,
   login: string,
@@ -337,9 +438,9 @@ export function injectCardAliasControls(
   editBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
-    const currentAlias = getAlias(login);
-    const newAlias = window.prompt(`Новое имя для ${login}:`, currentAlias ?? '');
-    if (newAlias !== null) onSetAlias(login, newAlias.trim());
+    showInlineAliasForm(btnWrap as HTMLElement, login, getAlias(login) ?? undefined, (newAlias) => {
+      onSetAlias(login, newAlias);
+    });
   });
   btnWrap.appendChild(editBtn);
 

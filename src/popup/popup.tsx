@@ -1,6 +1,8 @@
+declare const __FRONTEND_URL__: string;
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import browser from 'webextension-polyfill';
+import { debug, error } from '../utils/logger';
 
 interface AuthState {
   authenticated: boolean;
@@ -385,15 +387,18 @@ function Popup() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      debug('popup', 'init GET_AUTH');
       const auth = (await browser.runtime
         .sendMessage({ type: 'GET_AUTH' })
-        .catch(() => ({ authenticated: false, userLogin: null, avatarUrl: null }))) as AuthState;
+        .catch((e: any) => { error('popup', 'GET_AUTH error:', e); return { authenticated: false, userLogin: null, avatarUrl: null }; })) as AuthState;
+      debug('popup', 'GET_AUTH ->', auth);
 
       let channelLogin: string | null = null;
       try {
         const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
         if (tab?.url) channelLogin = extractChannelLogin(tab.url);
       } catch { /* noop */ }
+      debug('popup', 'channelLogin=', channelLogin);
 
       if (cancelled) return;
 
@@ -406,9 +411,11 @@ function Popup() {
       }));
 
       if (auth.authenticated && channelLogin) {
+        debug('popup', 'GET_USER_RATING channel=', channelLogin);
         const res = (await browser.runtime
           .sendMessage({ type: 'GET_USER_RATING', channelLogin })
-          .catch(() => null)) as { score?: number } | null;
+          .catch((e: any) => { error('popup', 'GET_USER_RATING error:', e); return null; })) as { score?: number } | null;
+        debug('popup', 'GET_USER_RATING ->', res);
         if (cancelled) return;
         setState((p) => ({ ...p, channelRating: res?.score ?? null, ratingLoading: false }));
       }
@@ -452,7 +459,7 @@ function Popup() {
 
   const openProfile = () => {
     if (state.auth.userLogin)
-      browser.tabs.create({ url: `https://socialrating.app/profile/${state.auth.userLogin}` });
+      browser.tabs.create({ url: `${__FRONTEND_URL__}/profile/${state.auth.userLogin}` });
   };
 
   const handleExport = async () => {

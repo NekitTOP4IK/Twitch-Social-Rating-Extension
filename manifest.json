@@ -13,8 +13,7 @@
   "host_permissions": [
     "https://www.twitch.tv/*",
     "https://dashboard.twitch.tv/*",
-    "https://api.socialrating.app/*",
-    "http://localhost:8000/*"
+    "__BACKEND_URL__/*"
   ],
   "content_scripts": [
     {

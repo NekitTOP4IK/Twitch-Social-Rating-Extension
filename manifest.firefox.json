@@ -15,9 +15,8 @@
     "activeTab",
     "https://www.twitch.tv/*",
     "https://dashboard.twitch.tv/*",
-    "https://api.socialrating.app/*",
-    "http://localhost:8000/*",
-    "ws://localhost:8000/*"
+    "__BACKEND_URL__/*",
+    "__WS_BACKEND_URL__/*"
   ],
   "content_scripts": [
     {
@@ -32,7 +31,13 @@
   "background": {
     "scripts": ["background.js"]
   },
-  "content_security_policy": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:8000 ws://localhost:8000 https://api.socialrating.app wss://api.socialrating.app",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "twitch-social-rating@socialrating.app",
+      "strict_min_version": "109.0"
+    }
+  },
+  "content_security_policy": "script-src 'self'; object-src 'self'; connect-src 'self' __BACKEND_URL__ __WS_BACKEND_URL__",
   "browser_action": {
     "default_popup": "popup.html"
   }

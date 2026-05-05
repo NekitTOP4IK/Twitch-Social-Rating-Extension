@@ -1,4 +1,5 @@
-const WS_BASE = 'ws://localhost:8000';
+declare const __WS_BACKEND_URL__: string;
+const WS_BASE = __WS_BACKEND_URL__;
 const RECONNECT_DELAY = 5000;
 
 export type RatingUpdateCallback = (login: string, score: number) => void;
@@ -18,6 +19,8 @@ function connect(channelLogin: string): void {
       }
     } catch { /* ignore */ }
   });
+
+  socket.addEventListener('error', () => { /* close fires after error — reconnect handled there */ });
 
   socket.addEventListener('close', () => {
     if (activeChannel === channelLogin) {

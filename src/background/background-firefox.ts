@@ -7,7 +7,9 @@ type Message =
   | { type: 'LOGIN' }
   | { type: 'LOGOUT' }
   | { type: 'GET_USER_RATING'; channelLogin: string }
-  | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 };
+  | { type: 'FETCH_RATING'; login: string; channelLogin: string }
+  | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 }
+  | { type: 'OAUTH_CALLBACK'; access_token: string; refresh_token: string; login?: string; avatar_url?: string; expires_in?: string };
 
 interface StoredAuth {
   accessToken?: string;
@@ -19,25 +21,17 @@ interface StoredAuth {
 
 async function getStored(): Promise<StoredAuth> {
   return browser.storage.local.get([
-    'accessToken',
-    'refreshToken',
-    'expiresAt',
-    'userLogin',
-    'avatarUrl',
+    'accessToken', 'refreshToken', 'expiresAt', 'userLogin', 'avatarUrl',
   ]) as Promise<StoredAuth>;
 }
 
 async function logout(): Promise<void> {
   await browser.storage.local.remove([
-    'accessToken',
-    'refreshToken',
-    'expiresAt',
-    'userLogin',
-    'avatarUrl',
+    'accessToken', 'refreshToken', 'expiresAt', 'userLogin', 'avatarUrl',
   ]);
 }
 
-async function refreshToken(): Promise<string | null> {
+async function doRefresh(): Promise<string | null> {
   const { refreshToken: rt } = await getStored();
   if (!rt) return null;
   try {
@@ -46,10 +40,7 @@ async function refreshToken(): Promise<string | null> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: rt }),
     });
-    if (!res.ok) {
-      await logout();
-      return null;
-    }
+    if (!res.ok) { await logout(); return null; }
     const data = await res.json();
     await browser.storage.local.set({
       accessToken: data.access_token,
@@ -57,17 +48,13 @@ async function refreshToken(): Promise<string | null> {
       expiresAt: Date.now() + 900_000,
     });
     return data.access_token as string;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function getValidToken(): Promise<string | null> {
   const { accessToken, expiresAt } = await getStored();
   if (!accessToken) return null;
-  if (!expiresAt || Date.now() > expiresAt - 60_000) {
-    return refreshToken();
-  }
+  if (!expiresAt || Date.now() > expiresAt - 60_000) return doRefresh();
   return accessToken;
 }
 
@@ -81,9 +68,21 @@ async function getUserRating(channelLogin: string): Promise<{ score?: number } |
     if (!res.ok) return null;
     const data = await res.json();
     return { score: data.score };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
+}
+
+async function fetchRatingForCard(
+  login: string,
+  channelLogin: string,
+): Promise<{ login: string; score: number; isLowRating: boolean } | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return { login: data.login, score: data.score, isLowRating: data.score < 0 };
+  } catch { return null; }
 }
 
 async function castVote(
@@ -98,10 +97,7 @@ async function castVote(
       `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}/vote`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ value }),
       },
     );
@@ -111,92 +107,136 @@ async function castVote(
     }
     const data = await res.json();
     return { ok: true, score: data.score };
-  } catch {
-    return { ok: false, error: 'network_error' };
+  } catch { return { ok: false, error: 'network_error' }; }
+}
+
+// ── OAuth login state ─────────────────────────────────────────────────────────
+// Two paths are tried in parallel:
+//   Primary:  callback.html sends OAUTH_CALLBACK message after page load
+//   Backup:   tabs.onUpdated intercepts the redirect URL before page load
+// Whichever resolves first wins; the other becomes a no-op.
+
+type LoginResolve = (r: { success: boolean; userLogin?: string }) => void;
+
+let loginResolve: LoginResolve | null = null;
+let loginTabId: number | null = null;
+let loginUpdListener: ((tid: number, ci: browser.Tabs.OnUpdatedChangeInfoType) => void) | null = null;
+let loginRmvListener: ((tid: number) => void) | null = null;
+
+function cleanupListeners(): void {
+  if (loginUpdListener) {
+    browser.tabs.onUpdated.removeListener(loginUpdListener);
+    loginUpdListener = null;
+  }
+  if (loginRmvListener) {
+    browser.tabs.onRemoved.removeListener(loginRmvListener);
+    loginRmvListener = null;
   }
 }
 
-// —— Firefox OAuth: intercept /auth/extension-done via tabs.onUpdated ——
+function finishLogin(result: { success: boolean; userLogin?: string }, closeTab = true): void {
+  cleanupListeners();
+  const tid = loginTabId;
+  const resolve = loginResolve;
+  loginTabId = null;
+  loginResolve = null;
+  if (resolve) resolve(result);
+  if (closeTab && tid != null) browser.tabs.remove(tid).catch(() => {});
+}
+
+async function storeTokens(
+  accessToken: string,
+  refreshToken: string,
+  userLogin: string | undefined,
+  avatarUrl: string | undefined,
+  expiresIn: number,
+): Promise<void> {
+  await browser.storage.local.set({
+    accessToken,
+    refreshToken,
+    expiresAt: Date.now() + expiresIn * 1000,
+    userLogin,
+    avatarUrl,
+  });
+}
 
 async function login(): Promise<{ success: boolean; userLogin?: string }> {
-  const redirectUri = browser.runtime.getURL('callback.html');
+  // Cancel any in-progress login
+  if (loginResolve) finishLogin({ success: false }, true);
+
+  const callbackUrl = browser.runtime.getURL('callback.html');
   const authUrl =
     `${BACKEND_URL}/auth/twitch` +
-    `?extension_redirect_uri=${encodeURIComponent(redirectUri)}`;
+    `?extension_redirect_uri=${encodeURIComponent(callbackUrl)}`;
 
+  let tab: browser.Tabs.Tab;
   try {
-    const tab = await browser.tabs.create({ url: authUrl, active: true });
-
-    return new Promise<{ success: boolean; userLogin?: string }>((resolve) => {
-      let finished = false;
-
-      const finish = (result: { success: boolean; userLogin?: string }) => {
-        if (finished) return;
-        finished = true;
-        browser.tabs.onUpdated.removeListener(updatedListener);
-        browser.tabs.onRemoved.removeListener(removedListener);
-        browser.tabs.remove(tab.id!).catch(() => {});
-        resolve(result);
-      };
-
-      const updatedListener = (
-        updatedTabId: number,
-        changeInfo: browser.Tabs.OnUpdatedChangeInfoType,
-      ) => {
-        if (updatedTabId !== tab.id) return;
-        const url = changeInfo.url ?? '';
-        if (!url.includes(`${BACKEND_URL}/auth/extension-done`)) return;
-
-        try {
-          const u = new URL(url);
-          const accessToken = u.searchParams.get('access_token');
-          const refreshToken = u.searchParams.get('refresh_token');
-          const userLogin = u.searchParams.get('login') ?? undefined;
-          const avatarUrl = u.searchParams.get('avatar_url') ?? undefined;
-          const expiresIn = parseInt(u.searchParams.get('expires_in') ?? '900', 10);
-
-          if (!accessToken || !refreshToken) {
-            finish({ success: false });
-            return;
-          }
-
-          browser.storage.local.set({
-            accessToken,
-            refreshToken,
-            expiresAt: Date.now() + expiresIn * 1000,
-            userLogin,
-            avatarUrl,
-          }).then(() => {
-            finish({ success: true, userLogin });
-          }).catch(() => finish({ success: false }));
-        } catch {
-          finish({ success: false });
-        }
-      };
-
-      const removedListener = (removedTabId: number) => {
-        if (removedTabId !== tab.id) return;
-        finish({ success: false });
-      };
-
-      browser.tabs.onUpdated.addListener(updatedListener);
-      browser.tabs.onRemoved.addListener(removedListener);
-
-      // 5 min timeout
-      setTimeout(() => finish({ success: false }), 300_000);
-    });
+    tab = await browser.tabs.create({ url: authUrl, active: true });
   } catch {
     return { success: false };
   }
+  loginTabId = tab.id!;
+
+  return new Promise<{ success: boolean; userLogin?: string }>((resolve) => {
+    loginResolve = resolve;
+
+    // Intercept OAuth redirect via tabs.onUpdated.
+    // Backend redirects to http://localhost:8000/auth/extension-done?tokens (query params).
+    // As a fallback also catch moz-extension://...callback.html in case backend is changed.
+    const callbackBase = callbackUrl.split('?')[0].split('#')[0];
+    loginUpdListener = (uid: number, ci: browser.Tabs.OnUpdatedChangeInfoType) => {
+      if (uid !== loginTabId || !ci.url) return;
+      const url = ci.url;
+      // Two possible redirect targets from the backend
+      const isExtDone = url.includes('/auth/extension-done');
+      const isCallbackPage = url.startsWith(callbackBase);
+      if (!isExtDone && !isCallbackPage) return;
+      try {
+        const u = new URL(url);
+        // Backend-done URL uses query params; callback.html may use fragment
+        const src = (isCallbackPage && u.hash.length > 1) ? u.hash.slice(1) : u.search.slice(1);
+        const p = new URLSearchParams(src);
+        const at = p.get('access_token');
+        const rt = p.get('refresh_token');
+        if (!at || !rt) return;
+        const ul = p.get('login') ?? undefined;
+        const av = p.get('avatar_url') ?? undefined;
+        const ei = parseInt(p.get('expires_in') ?? '900', 10);
+        storeTokens(at, rt, ul, av, ei)
+          .then(() => finishLogin({ success: true, userLogin: ul }, true))
+          .catch(() => finishLogin({ success: false }, true));
+      } catch { /* malformed URL */ }
+    };
+
+    // Fallback: user closed the tab
+    loginRmvListener = (uid: number) => {
+      if (uid !== loginTabId) return;
+      loginTabId = null; // tab is already gone
+      finishLogin({ success: false }, false);
+    };
+
+    browser.tabs.onUpdated.addListener(loginUpdListener);
+    browser.tabs.onRemoved.addListener(loginRmvListener);
+
+    // 5-minute hard timeout
+    setTimeout(() => {
+      if (loginResolve === resolve) finishLogin({ success: false }, true);
+    }, 300_000);
+  });
 }
 
+// ── Message listener ──────────────────────────────────────────────────────────
+
 browser.runtime.onMessage.addListener(
-  (message: unknown, _sender: browser.Runtime.MessageSender, sendResponse: (r: unknown) => void): true => {
-    console.log('[TSR BG] received message', message);
+  (
+    message: unknown,
+    _sender: browser.Runtime.MessageSender,
+    sendResponse: (r: unknown) => void,
+  ): true => {
     const msg = message as Message;
+
     switch (msg.type) {
       case 'GET_AUTH':
-        console.log('[TSR BG] GET_AUTH');
         getStored().then(({ accessToken, userLogin, avatarUrl }) =>
           sendResponse({
             authenticated: !!accessToken,
@@ -207,33 +247,50 @@ browser.runtime.onMessage.addListener(
         return true;
 
       case 'LOGIN':
-        console.log('[TSR BG] LOGIN');
         login().then(sendResponse);
         return true;
 
       case 'LOGOUT':
-        console.log('[TSR BG] LOGOUT');
         logout().then(() => sendResponse({ success: true }));
         return true;
 
       case 'GET_USER_RATING':
-        console.log('[TSR BG] GET_USER_RATING', msg.channelLogin);
-        getUserRating(msg.channelLogin).then((res) => {
-          console.log('[TSR BG] GET_USER_RATING result', res);
-          sendResponse(res);
-        });
+        getUserRating(msg.channelLogin).then(sendResponse);
+        return true;
+
+      case 'FETCH_RATING':
+        fetchRatingForCard(msg.login, msg.channelLogin).then(sendResponse);
         return true;
 
       case 'CAST_VOTE':
-        console.log('[TSR BG] CAST_VOTE', msg.login, msg.channelLogin, msg.value);
-        castVote(msg.login, msg.channelLogin, msg.value).then((res) => {
-          console.log('[TSR BG] CAST_VOTE result', res);
-          sendResponse(res);
-        });
+        castVote(msg.login, msg.channelLogin, msg.value).then(sendResponse);
         return true;
 
+      case 'OAUTH_CALLBACK': {
+        // Primary path: callback.html loaded successfully and sent us the tokens.
+        const at = msg.access_token;
+        const rt = msg.refresh_token;
+        if (!at || !rt) {
+          finishLogin({ success: false }, true);
+          sendResponse({ ok: false });
+          return true;
+        }
+        const ul = msg.login ?? undefined;
+        const av = msg.avatar_url ?? undefined;
+        const ei = parseInt(msg.expires_in ?? '900', 10);
+        storeTokens(at, rt, ul, av, ei)
+          .then(() => {
+            finishLogin({ success: true, userLogin: ul }, true);
+            sendResponse({ ok: true });
+          })
+          .catch(() => {
+            finishLogin({ success: false }, true);
+            sendResponse({ ok: false });
+          });
+        return true;
+      }
+
       default:
-        console.log('[TSR BG] unknown message type', (msg as any).type);
         sendResponse({});
         return true;
     }

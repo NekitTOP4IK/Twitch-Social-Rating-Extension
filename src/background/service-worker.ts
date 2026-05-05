@@ -7,6 +7,7 @@ type Message =
   | { type: 'LOGIN' }
   | { type: 'LOGOUT' }
   | { type: 'GET_USER_RATING'; channelLogin: string }
+  | { type: 'FETCH_RATING'; login: string; channelLogin: string }
   | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 };
 
 interface StoredAuth {
@@ -128,6 +129,22 @@ async function getUserRating(channelLogin: string): Promise<{ score?: number } |
   }
 }
 
+async function fetchRatingForCard(
+  login: string,
+  channelLogin: string,
+): Promise<{ login: string; score: number; isLowRating: boolean } | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return { login: data.login, score: data.score, isLowRating: data.score < 0 };
+  } catch {
+    return null;
+  }
+}
+
 async function castVote(
   login: string,
   channelLogin: string,
@@ -182,6 +199,10 @@ browser.runtime.onMessage.addListener(
 
       case 'GET_USER_RATING':
         getUserRating(msg.channelLogin).then(sendResponse);
+        return true;
+
+      case 'FETCH_RATING':
+        fetchRatingForCard(msg.login, msg.channelLogin).then(sendResponse);
         return true;
 
       case 'CAST_VOTE':

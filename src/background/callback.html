@@ -14,7 +14,7 @@
       height: 100vh;
       margin: 0;
     }
-    p { font-size: 14px; }
+    p { font-size: 14px; color: #adadb8; }
   </style>
 </head>
 <body>
@@ -22,8 +22,12 @@
   <script>
     (function () {
       var msg = document.getElementById('msg');
+
+      // Tokens may be in the fragment (#) or query string (?), depending on backend
       var hash = window.location.hash.slice(1);
-      var params = new URLSearchParams(hash);
+      var search = window.location.search.slice(1);
+      var params = new URLSearchParams(hash || search);
+
       var access_token = params.get('access_token');
       var refresh_token = params.get('refresh_token');
       var login = params.get('login');
@@ -44,13 +48,13 @@
         expires_in: expires_in,
       };
 
-      var send = function () {
+      function send() {
         if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.sendMessage) {
           browser.runtime.sendMessage(payload).catch(function () {});
         } else if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
           chrome.runtime.sendMessage(payload, function () {});
         }
-      };
+      }
 
       send();
       msg.textContent = 'Авторизация завершена. Можно закрыть эту вкладку.';

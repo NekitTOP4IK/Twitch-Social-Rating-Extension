@@ -1,22 +1,19 @@
+import browser from 'webextension-polyfill';
 import { RatingData } from '../types';
 
-const BASE_URL = 'http://localhost:8000';
-
+// Route through background script to avoid mixed-content / CORS restrictions
+// that Firefox applies to content-script fetch() on HTTPS pages.
 export async function fetchRating(
   login: string,
   channelLogin: string,
 ): Promise<RatingData | null> {
   try {
-    const res = await fetch(
-      `${BASE_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}`,
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return {
-      login: data.login,
-      score: data.score,
-      isLowRating: data.score < 0,
-    };
+    const result = await browser.runtime.sendMessage({
+      type: 'FETCH_RATING',
+      login,
+      channelLogin,
+    });
+    return (result as RatingData | null) ?? null;
   } catch {
     return null;
   }

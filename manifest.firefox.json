@@ -11,6 +11,7 @@
   },
   "permissions": [
     "storage",
+    "downloads",
     "tabs",
     "activeTab",
     "https://www.twitch.tv/*",

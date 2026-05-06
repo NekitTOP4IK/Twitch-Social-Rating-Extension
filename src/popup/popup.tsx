@@ -379,7 +379,7 @@ function Popup() {
   const [activeTab, setActiveTab] = useState<'main' | 'aliases'>('main');
   const [aliases, setAliases] = useState<Record<string, string>>({});
   const [aliasLoading, setAliasLoading] = useState(true);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'error'>('pending');
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'synced' | 'pending' | 'error'>('idle');
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -397,13 +397,15 @@ function Popup() {
       if (currentAuth.authenticated) {
         const refresh = (await browser.runtime
           .sendMessage({ type: 'REFRESH_ME' })
-          .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string };
+          .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string; error?: string };
         if (refresh.ok) {
           currentAuth = {
             ...currentAuth,
             avatarUrl: refresh.avatarUrl ?? currentAuth.avatarUrl,
             userLogin: refresh.login ?? currentAuth.userLogin,
           };
+        } else if (refresh.error === 'not_authenticated') {
+          currentAuth = { authenticated: false, userLogin: null, avatarUrl: null };
         }
       }
 
@@ -424,7 +426,15 @@ function Popup() {
         ratingLoading: currentAuth.authenticated && channelLogin !== null,
       }));
 
-      if (auth.authenticated && channelLogin) {
+      const aliasRes = (await browser.runtime
+        .sendMessage({ type: 'GET_ALIASES' })
+        .catch(() => ({ aliases: {} }))) as { aliases?: Record<string, string> };
+      if (!cancelled) {
+        setAliases(aliasRes.aliases ?? {});
+        setAliasLoading(false);
+      }
+
+      if (currentAuth.authenticated && channelLogin) {
         debug('popup', 'GET_USER_RATING channel=', channelLogin);
         const res = (await browser.runtime
           .sendMessage({ type: 'GET_USER_RATING', channelLogin })
@@ -432,15 +442,6 @@ function Popup() {
         debug('popup', 'GET_USER_RATING ->', res);
         if (cancelled) return;
         setState((p) => ({ ...p, channelRating: res?.score ?? null, ratingLoading: false }));
-      }
-
-      // Load aliases
-      const aliasRes = (await browser.runtime
-        .sendMessage({ type: 'GET_ALIASES' })
-        .catch(() => ({ aliases: {} }))) as { aliases?: Record<string, string> };
-      if (!cancelled) {
-        setAliases(aliasRes.aliases ?? {});
-        setAliasLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -454,13 +455,15 @@ function Popup() {
       .catch(() => ({ authenticated: false, userLogin: null, avatarUrl: null }))) as AuthState;
     const refresh = (await browser.runtime
       .sendMessage({ type: 'REFRESH_ME' })
-      .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string };
+      .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string; error?: string };
     if (refresh.ok) {
       auth = {
         ...auth,
         avatarUrl: refresh.avatarUrl ?? auth.avatarUrl,
         userLogin: refresh.login ?? auth.userLogin,
       };
+    } else if (refresh.error === 'not_authenticated') {
+      auth = { authenticated: false, userLogin: null, avatarUrl: null };
     }
     setState((p) => ({ ...p, working: false, auth }));
 
@@ -487,18 +490,27 @@ function Popup() {
   };
 
   const handleExport = async () => {
-    const { data, count } = (await browser.runtime
-      .sendMessage({ type: 'EXPORT_ALIASES' })
-      .catch(() => ({ data: [], count: 0 }))) as { data: Array<{ login: string; alias: string }>; count: number };
+    try {
+      const { data } = (await browser.runtime
+        .sendMessage({ type: 'EXPORT_ALIASES' })
+        .catch(() => ({ data: [], count: 0 }))) as { data: Array<{ login: string; alias: string }>; count: number };
 
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    await browser.downloads.download({
-      url,
-      filename: `social-rating-aliases-${new Date().toISOString().slice(0, 10)}.json`,
-      saveAs: true,
-    });
-    URL.revokeObjectURL(url);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const filename = `social-rating-aliases-${new Date().toISOString().slice(0, 10)}.json`;
+      if (browser.downloads?.download) {
+        await browser.downloads.download({ url, filename, saveAs: true });
+      } else {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.click();
+      }
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      error('popup', 'EXPORT_ALIASES error:', e);
+      setSyncStatus('error');
+    }
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -566,7 +578,11 @@ function Popup() {
       ? `Синхронизировано ${syncedAt ? `(${formatDate(syncedAt)})` : ''}`
       : syncStatus === 'error'
       ? 'Ошибка синхронизации'
-      : 'Синхронизация...';
+      : syncStatus === 'pending'
+      ? 'Синхронизация...'
+      : auth.authenticated
+      ? 'Готово к синхронизации'
+      : 'Локальные алиасы';
 
   return (
     <div style={S.root}>
@@ -580,7 +596,7 @@ function Popup() {
       </div>
 
       {/* Tabs */}
-      {auth.authenticated && (
+      {!loading && (
         <div style={{ padding: '8px 14px 0' }}>
           <div style={S.tabBar}>
             <button

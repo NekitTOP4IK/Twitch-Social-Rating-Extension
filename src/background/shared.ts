@@ -83,7 +83,7 @@ export async function getValidToken(): Promise<string | null> {
   return accessToken;
 }
 
-export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; login?: string }> {
+export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; login?: string; error?: string }> {
   const token = await getValidToken();
   debug('shared', 'refreshMe token=', !!token);
   if (!token) return { ok: false };
@@ -92,7 +92,13 @@ export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; lo
       headers: { Authorization: `Bearer ${token}` },
     });
     debug('shared', 'refreshMe res.ok=', res.ok, 'status=', res.status);
-    if (!res.ok) return { ok: false };
+    if (!res.ok) {
+      if (res.status === 401) {
+        await clearTokens();
+        return { ok: false, error: 'not_authenticated' };
+      }
+      return { ok: false, error: String(res.status) };
+    }
     const data = await res.json();
     const avatarUrl = data.avatar_url ?? undefined;
     const login = data.login ?? undefined;
@@ -173,6 +179,59 @@ export async function castVote(
   }
 }
 
+export async function getChannelPermissions(channelLogin: string): Promise<{
+  role: 'owner' | 'moderator' | 'global_admin' | null;
+  can_adjust_rating: boolean;
+  allowed_modes: Array<'delta' | 'set'>;
+} | null> {
+  const token = await getValidToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/me/permissions`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      await clearTokens();
+      return null;
+    }
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    error('shared', 'getChannelPermissions error:', e);
+    return null;
+  }
+}
+
+export async function adjustChannelRating(
+  channelLogin: string,
+  login: string,
+  value: number,
+  mode: 'delta' | 'set' = 'delta',
+): Promise<{ ok: boolean; score?: number; error?: string }> {
+  const token = await getValidToken();
+  if (!token) return { ok: false, error: 'not_authenticated' };
+  try {
+    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/ratings/${encodeURIComponent(login)}/adjust`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ value, mode }),
+    });
+    if (res.status === 401) {
+      await clearTokens();
+      return { ok: false, error: 'not_authenticated' };
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { ok: false, error: err.detail ?? String(res.status) };
+    }
+    const data = await res.json();
+    return { ok: true, score: data.score };
+  } catch (e) {
+    error('shared', 'adjustChannelRating error:', e);
+    return { ok: false, error: 'network_error' };
+  }
+}
+
 export async function getAliases(): Promise<Record<string, string>> {
   const { aliases } = await getStored();
   return aliases ?? {};
@@ -203,6 +262,10 @@ export async function setAlias(
         body: JSON.stringify({ target_login: normalizedLogin, alias: trimmedAlias }),
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          await clearTokens();
+          return { ok: false, error: 'not_authenticated' };
+        }
         const err = await res.json().catch(() => ({}));
         return { ok: false, error: err.detail ?? String(res.status) };
       }
@@ -225,6 +288,10 @@ export async function deleteAlias(login: string): Promise<{ ok: boolean; error?:
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (res.status === 401) {
+        await clearTokens();
+        return { ok: false, error: 'not_authenticated' };
+      }
       if (!res.ok && res.status !== 404) {
         const err = await res.json().catch(() => ({}));
         return { ok: false, error: err.detail ?? String(res.status) };
@@ -269,6 +336,10 @@ export async function importAliases(
         body: JSON.stringify({ aliases: payload }),
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          await clearTokens();
+          return { ok: false, error: 'not_authenticated', imported };
+        }
         const err = await res.json().catch(() => ({}));
         return { ok: false, error: err.detail ?? String(res.status), imported };
       }
@@ -289,6 +360,10 @@ export async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: st
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
+      if (res.status === 401) {
+        await clearTokens();
+        return { ok: false, error: 'not_authenticated' };
+      }
       const err = await res.json().catch(() => ({}));
       return { ok: false, error: err.detail ?? String(res.status) };
     }
@@ -321,6 +396,63 @@ export async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: st
     await browser.storage.local.set({ aliases: merged, aliasesSyncedAt: Date.now() });
     return { ok: true };
   } catch {
+    return { ok: false, error: 'network_error' };
+  }
+}
+
+export async function getChannelModerators(channelLogin: string): Promise<Array<{ login: string; role: string }> | null> {
+  const token = await getValidToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) { await clearTokens(); return null; }
+    if (!res.ok) return null;
+    return await res.json() as Array<{ login: string; role: string }>;
+  } catch (e) {
+    error('shared', 'getChannelModerators error:', e);
+    return null;
+  }
+}
+
+export async function addChannelModerator(channelLogin: string, targetLogin: string): Promise<{ ok: boolean; error?: string }> {
+  const token = await getValidToken();
+  if (!token) return { ok: false, error: 'not_authenticated' };
+  try {
+    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ login: targetLogin, role: 'moderator' }),
+    });
+    if (res.status === 401) { await clearTokens(); return { ok: false, error: 'not_authenticated' }; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { ok: false, error: err.detail ?? String(res.status) };
+    }
+    return { ok: true };
+  } catch (e) {
+    error('shared', 'addChannelModerator error:', e);
+    return { ok: false, error: 'network_error' };
+  }
+}
+
+export async function removeChannelModerator(channelLogin: string, targetLogin: string): Promise<{ ok: boolean; error?: string }> {
+  const token = await getValidToken();
+  if (!token) return { ok: false, error: 'not_authenticated' };
+  try {
+    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators/${encodeURIComponent(targetLogin)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) { await clearTokens(); return { ok: false, error: 'not_authenticated' }; }
+    if (!res.ok && res.status !== 404) {
+      const err = await res.json().catch(() => ({}));
+      return { ok: false, error: err.detail ?? String(res.status) };
+    }
+    return { ok: true };
+  } catch (e) {
+    error('shared', 'removeChannelModerator error:', e);
     return { ok: false, error: 'network_error' };
   }
 }

@@ -16,3 +16,11 @@ export interface AliasEntry {
 }
 
 export type AliasMap = Record<string, string>;
+
+export interface ChannelPermissions {
+  channel_login: string;
+  role: 'owner' | 'moderator' | 'global_admin' | null;
+  can_manage_moderators: boolean;
+  can_adjust_rating: boolean;
+  allowed_modes: Array<'delta' | 'set'>;
+}

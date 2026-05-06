@@ -1,6 +1,6 @@
 import browser from 'webextension-polyfill';
 import { DetectedCard } from './card-detector';
-import { RatingData } from '../types';
+import { ChannelPermissions, RatingData } from '../types';
 
 declare const __FRONTEND_URL__: string;
 
@@ -72,14 +72,17 @@ function ensureBadgeStyle(): void {
       flex: 1;
     }
     [data-tsr-badge] .tsr-vote-btn {
-      border-radius: 12px;
+      border-radius: 0;
       height: 24px;
-      padding: 0 10px;
+      width: 24px;
+      padding: 0;
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
       user-select: none;
-      line-height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
       background: transparent;
       transition: background 0.12s, border-color 0.12s;
@@ -129,6 +132,12 @@ function ensureSeventvStyle(): void {
 // ── Label helpers ─────────────────────────────────────────────────────────────
 
 const WARN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+
+const PENCIL_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4.5 19.5L8.2 18.7L18.8 8.1L15.9 5.2L5.3 15.8L4.5 19.5Z" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.2 7.9L16.1 10.8" stroke="white" stroke-width="1.6" stroke-linecap="round"/><path d="M5.7 16.2L7.8 18.3" stroke="white" stroke-width="1" stroke-linecap="round"/></svg>`;
+
+function swordSvg(bg: string) {
+  return `<svg width="24" height="24" viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg"><rect width="36" height="36" rx="4" fill="${bg}"/><g transform="rotate(45 18 18)"><path fill="#fff" d="M14 6 L18 1.8 L22 6 L21 22 H15 Z"/><rect x="10" y="21" width="16" height="3.5" rx="1" fill="#fff"/><rect x="16" y="24" width="4" height="7" rx="1" fill="#fff"/></g></svg>`;
+}
 
 function labelText(channel: string, isLow: boolean): string {
   const prefix = channel ? `${channel} / ` : '';
@@ -207,6 +216,34 @@ function makeVoteBtn(label: string, tint: string): HTMLButtonElement {
     btn.style.borderColor = `${tint}50`;
   });
   return btn;
+}
+
+function makeIconBtn(label: string, tint: string): HTMLButtonElement {
+  const btn = makeVoteBtn(label, tint);
+  btn.style.padding = '0 6px';
+  btn.style.fontSize = '14px';
+  return btn;
+}
+
+const permissionCache = new Map<string, Promise<ChannelPermissions | null>>();
+
+function getChannelPermissions(channelLogin: string): Promise<ChannelPermissions | null> {
+  if (!channelLogin) return Promise.resolve(null);
+  const cached = permissionCache.get(channelLogin);
+  if (cached) return cached;
+  const promise = browser.runtime
+    .sendMessage({ type: 'GET_CHANNEL_PERMISSIONS', channelLogin })
+    .then((res) => (res as ChannelPermissions | null) ?? null)
+    .catch(() => null);
+  permissionCache.set(channelLogin, promise);
+  return promise;
+}
+
+async function getChannelModerators(channelLogin: string): Promise<Array<{ login: string; role: string }> | null> {
+  if (!channelLogin) return null;
+  try {
+    return await browser.runtime.sendMessage({ type: 'GET_CHANNEL_MODERATORS', channelLogin }) as Array<{ login: string; role: string }> | null;
+  } catch { return null; }
 }
 
 // ── Injection target ──────────────────────────────────────────────────────────
@@ -353,6 +390,157 @@ export async function injectBadge(
 
     bottomRow.appendChild(plusBtn);
     bottomRow.appendChild(minusBtn);
+
+    const permissions = await getChannelPermissions(channelLogin);
+
+    // ── Pencil: inline rating adjustment ──────────────────────────────
+    if (permissions?.can_adjust_rating) {
+      const pencilBtn = document.createElement('button');
+      pencilBtn.className = 'tsr-vote-btn';
+      pencilBtn.innerHTML = PENCIL_SVG;
+      pencilBtn.title = 'Изменить рейтинг';
+      pencilBtn.style.cssText = 'width:24px;height:24px;padding:0;border:none;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+      scoreEl.insertAdjacentElement('afterend', pencilBtn);
+
+      const editRow = document.createElement('div');
+      editRow.className = 'tsr-row';
+      editRow.style.display = 'none';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.inputMode = 'numeric';
+      input.placeholder = '±число';
+      input.style.cssText = 'width:80px;font-size:12px;background:#18181b;border:1px solid #1f1f23;color:#efeff1;border-radius:4px;padding:3px 6px;outline:none;font-family:ui-monospace,monospace;';
+
+      const confirmBtn = makeIconBtn('✓', '#00e676');
+      confirmBtn.title = 'Применить';
+      const cancelBtn = makeIconBtn('✕', '#adadb8');
+      cancelBtn.title = 'Отмена';
+
+      const doApply = async () => {
+        const raw = input.value.trim().replace(/−/g, '-');
+        if (!/^[+-]?\d+$/.test(raw)) {
+          showToast(wrap, 'Некорректное значение', 'err');
+          return;
+        }
+        const parsed = Number(raw);
+        if (!Number.isSafeInteger(parsed) || parsed < -1000 || parsed > 1000) {
+          showToast(wrap, 'Значение от −1000 до +1000', 'err');
+          return;
+        }
+        const mode: 'delta' | 'set' = /^[+-]/.test(raw) ? 'delta' : 'set';
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+
+        const res = (await browser.runtime
+          .sendMessage({ type: 'ADJUST_CHANNEL_RATING', login: card.login, channelLogin, value: parsed, mode })
+          .catch(() => ({ ok: false, error: 'network_error' }))) as {
+          ok: boolean;
+          score?: number;
+          error?: string;
+        };
+
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+
+        if (res.ok && res.score !== undefined) {
+          const ns = res.score;
+          const newAccent = scoreAccent(ns);
+          stripe.style.background = newAccent;
+          stripe.style.boxShadow = `4px 0 16px 4px ${newAccent}30,2px 0 6px 2px ${newAccent}50`;
+          scoreEl.style.color = scoreFg(ns);
+          scoreEl.textContent = scoreText(ns);
+          setLabel(label, channelLogin, ns < 0);
+          showToast(wrap, `Рейтинг обновлён: ${scoreText(ns)}`, 'ok');
+          editRow.style.display = 'none';
+          pencilBtn.style.display = '';
+          input.value = '';
+        } else {
+          showToast(wrap, res.error === 'not_authenticated' ? 'Не авторизован' : 'Ошибка изменения рейтинга', 'err');
+        }
+      };
+
+      const doCancel = () => {
+        editRow.style.display = 'none';
+        pencilBtn.style.display = '';
+        input.value = '';
+      };
+
+      confirmBtn.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); doApply(); });
+      cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); doCancel(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.stopPropagation(); doApply(); }
+        if (e.key === 'Escape') { e.stopPropagation(); doCancel(); }
+      });
+
+      editRow.appendChild(input);
+      editRow.appendChild(confirmBtn);
+      editRow.appendChild(cancelBtn);
+      wrap.appendChild(editRow);
+
+      pencilBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        pencilBtn.style.display = 'none';
+        editRow.style.display = 'flex';
+        input.focus();
+      });
+    }
+
+    // ── Sword: moderator toggle ───────────────────────────────────────
+    if (permissions?.can_manage_moderators) {
+      const moderators = await getChannelModerators(channelLogin);
+      const isModerator = moderators?.some(
+        (m) => m.login.toLowerCase() === card.login.toLowerCase() && m.role === 'moderator',
+      ) ?? false;
+
+      let currentIsModerator = isModerator;
+
+      const swordBtn = document.createElement('button');
+      swordBtn.className = 'tsr-vote-btn';
+      swordBtn.title = currentIsModerator ? 'Снять модератора' : 'Назначить модератором';
+      swordBtn.style.cssText = 'width:24px;height:24px;padding:0;border:none;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;flex-shrink:0;';
+
+      const applySwordStyle = () => {
+        const bg = currentIsModerator ? '#E91916' : '#00AD03';
+        swordBtn.style.background = bg;
+        swordBtn.innerHTML = swordSvg(bg);
+        swordBtn.title = currentIsModerator ? 'Снять модератора' : 'Назначить модератором';
+      };
+
+      swordBtn.addEventListener('mouseover', () => {
+        if (swordBtn.disabled) return;
+        swordBtn.style.filter = 'brightness(1.15)';
+      });
+      swordBtn.addEventListener('mouseout', () => {
+        if (swordBtn.disabled) return;
+        swordBtn.style.filter = 'none';
+      });
+
+      swordBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        swordBtn.disabled = true;
+        const action = currentIsModerator
+          ? { type: 'REMOVE_CHANNEL_MODERATOR', channelLogin, targetLogin: card.login }
+          : { type: 'ADD_CHANNEL_MODERATOR', channelLogin, targetLogin: card.login };
+        const res = (await browser.runtime.sendMessage(action).catch(() => ({ ok: false, error: 'network_error' }))) as {
+          ok: boolean;
+          error?: string;
+        };
+        swordBtn.disabled = false;
+        if (res.ok) {
+          currentIsModerator = !currentIsModerator;
+          applySwordStyle();
+          showToast(wrap, currentIsModerator ? 'Модератор назначен' : 'Модератор снят', 'ok');
+        } else {
+          showToast(wrap, res.error ?? 'Ошибка', 'err');
+        }
+      });
+
+      applySwordStyle();
+      bottomRow.appendChild(swordBtn);
+    }
   }
 
   wrap.appendChild(bottomRow);

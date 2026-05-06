@@ -9,7 +9,7 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-  "permissions": ["storage", "identity"],
+  "permissions": ["storage", "identity", "downloads"],
   "host_permissions": [
     "https://www.twitch.tv/*",
     "https://dashboard.twitch.tv/*",

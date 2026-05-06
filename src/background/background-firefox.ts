@@ -6,6 +6,8 @@ import {
   getUserRating, fetchRatingForCard, castVote,
   getAliases, setAlias, deleteAlias, exportAliases, importAliases, syncAliasesWithServer,
   refreshMe,
+  getChannelPermissions, adjustChannelRating,
+  getChannelModerators, addChannelModerator, removeChannelModerator,
 } from './shared';
 
 type Message =
@@ -15,6 +17,11 @@ type Message =
   | { type: 'GET_USER_RATING'; channelLogin: string }
   | { type: 'FETCH_RATING'; login: string; channelLogin: string }
   | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 }
+  | { type: 'GET_CHANNEL_PERMISSIONS'; channelLogin: string }
+  | { type: 'ADJUST_CHANNEL_RATING'; login: string; channelLogin: string; value: number; mode: 'delta' | 'set' }
+  | { type: 'GET_CHANNEL_MODERATORS'; channelLogin: string }
+  | { type: 'ADD_CHANNEL_MODERATOR'; channelLogin: string; targetLogin: string }
+  | { type: 'REMOVE_CHANNEL_MODERATOR'; channelLogin: string; targetLogin: string }
   | { type: 'GET_ALIASES' }
   | { type: 'SET_ALIAS'; login: string; alias: string }
   | { type: 'DELETE_ALIAS'; login: string }
@@ -140,6 +147,16 @@ function handleMessage(msg: Message): Promise<unknown> | undefined {
       return fetchRatingForCard(msg.login, msg.channelLogin).then((r) => { debug('BG', 'FETCH_RATING ->', r); return r; });
     case 'CAST_VOTE':
       return castVote(msg.login, msg.channelLogin, msg.value);
+    case 'GET_CHANNEL_PERMISSIONS':
+      return getChannelPermissions(msg.channelLogin);
+    case 'ADJUST_CHANNEL_RATING':
+      return adjustChannelRating(msg.channelLogin, msg.login, msg.value, msg.mode);
+    case 'GET_CHANNEL_MODERATORS':
+      return getChannelModerators(msg.channelLogin);
+    case 'ADD_CHANNEL_MODERATOR':
+      return addChannelModerator(msg.channelLogin, msg.targetLogin);
+    case 'REMOVE_CHANNEL_MODERATOR':
+      return removeChannelModerator(msg.channelLogin, msg.targetLogin);
     case 'GET_ALIASES':
       return getAliases().then((aliases) => ({ aliases }));
     case 'SET_ALIAS':

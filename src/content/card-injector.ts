@@ -161,8 +161,18 @@ function scoreText(score: number): string {
   return `${score}`;
 }
 
-function formatVoteError(error: string): string {
-  if (error.includes('24 hours') || error === '429') return 'Подожди — голосовать можно раз в 24 часа';
+function formatNextVoteDate(ts: number): string {
+  return new Date(ts).toLocaleDateString('ru-RU', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function formatVoteError(error: string, nextVoteAt?: number): string {
+  if (error.includes('24 hours') || error === '429') {
+    const ts = nextVoteAt ? nextVoteAt * 1000 : Date.now() + 86400000;
+    return `Подожди! Следующее голосование ${formatNextVoteDate(ts)}`;
+  }
   if (error.includes('yourself')) return 'Нельзя голосовать за себя';
   if (error.includes('below zero')) return 'Твой рейтинг < 0 — голосование заблокировано';
   if (error === 'not_authenticated') return 'Не авторизован — войди через иконку расширения';
@@ -314,6 +324,7 @@ export async function injectBadge(
         ok: boolean;
         score?: number;
         error?: string;
+        nextVoteAt?: number;
       };
 
       plusBtn.disabled = false;
@@ -329,9 +340,10 @@ export async function injectBadge(
         scoreEl.style.color = scoreFg(ns);
         scoreEl.textContent = scoreText(ns);
         setLabel(label, channelLogin, ns < 0);
-        showToast(wrap, `Принято — рейтинг ${scoreText(ns)}`, 'ok');
+        const nextTs = res.nextVoteAt ? res.nextVoteAt * 1000 : Date.now() + 86400000;
+        showToast(wrap, `Голос принят. Новый рейтинг ${scoreText(ns)}. Следующее голосование ${formatNextVoteDate(nextTs)}`, 'ok');
       } else {
-        const msg = formatVoteError(res.error ?? '');
+        const msg = formatVoteError(res.error ?? '', res.nextVoteAt);
         showToast(wrap, msg, msg.startsWith('Подожди') ? 'warn' : 'err');
       }
     };

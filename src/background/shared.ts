@@ -83,6 +83,28 @@ export async function getValidToken(): Promise<string | null> {
   return accessToken;
 }
 
+export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; login?: string }> {
+  const token = await getValidToken();
+  debug('shared', 'refreshMe token=', !!token);
+  if (!token) return { ok: false };
+  try {
+    const res = await fetch(`${BACKEND_URL}/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    debug('shared', 'refreshMe res.ok=', res.ok, 'status=', res.status);
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    const avatarUrl = data.avatar_url ?? undefined;
+    const login = data.login ?? undefined;
+    await browser.storage.local.set({ avatarUrl, userLogin: login });
+    debug('shared', 'refreshMe updated avatarUrl=', !!avatarUrl, 'login=', login);
+    return { ok: true, avatarUrl, login };
+  } catch (e) {
+    error('shared', 'refreshMe error:', e);
+    return { ok: false };
+  }
+}
+
 export async function getUserRating(channelLogin: string): Promise<{ score?: number } | null> {
   const { userLogin } = await getStored();
   if (!userLogin) return null;
@@ -123,7 +145,7 @@ export async function castVote(
   login: string,
   channelLogin: string,
   value: 1 | -1,
-): Promise<{ ok: boolean; score?: number; error?: string }> {
+): Promise<{ ok: boolean; score?: number; error?: string; nextVoteAt?: number }> {
   const token = await getValidToken();
   debug('shared', 'castVote token=', !!token, 'login=', login, 'channel=', channelLogin, 'value=', value);
   if (!token) return { ok: false, error: 'not_authenticated' };
@@ -137,9 +159,14 @@ export async function castVote(
     debug('shared', 'castVote res.ok=', res.ok, 'status=', res.status);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
+      const detail = err.detail;
+      if (detail && typeof detail === 'object' && detail.next_vote_at) {
+        return { ok: false, error: detail.message ?? String(res.status), nextVoteAt: detail.next_vote_at };
+      }
       return { ok: false, error: err.detail ?? String(res.status) };
     }
-    return { ok: true, score: (await res.json()).score };
+    const data = await res.json();
+    return { ok: true, score: data.score, nextVoteAt: data.next_vote_at };
   } catch (e) {
     error('shared', 'castVote error:', e);
     return { ok: false, error: 'network_error' };

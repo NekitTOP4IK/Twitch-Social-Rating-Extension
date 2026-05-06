@@ -646,6 +646,9 @@ function showInlineAliasForm(
     if (e.key === 'Enter') save();
     if (e.key === 'Escape') cleanup();
   });
+  for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
+    input.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
+  }
 
   const BTN_BASE = [
     'display:inline-flex',
@@ -669,12 +672,18 @@ function showInlineAliasForm(
   confirmBtn.style.cssText = `${BTN_BASE};background:#00e67618;border-color:#00e67650;color:#00e676;`;
   confirmBtn.addEventListener('mouseover', () => { confirmBtn.style.background = '#00e67630'; });
   confirmBtn.addEventListener('mouseout', () => { confirmBtn.style.background = '#00e67618'; });
+  for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
+    confirmBtn.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
+  }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = '✕';
   cancelBtn.style.cssText = `${BTN_BASE};background:#ffffff08;border-color:#3a3a3d;color:#7d7d87;`;
   cancelBtn.addEventListener('mouseover', () => { cancelBtn.style.background = '#ffffff14'; cancelBtn.style.color = '#adadb8'; });
   cancelBtn.addEventListener('mouseout', () => { cancelBtn.style.background = '#ffffff08'; cancelBtn.style.color = '#7d7d87'; });
+  for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
+    cancelBtn.addEventListener(ev, (e) => { e.stopPropagation(); e.preventDefault(); });
+  }
 
   const cleanup = () => {
     input.remove();

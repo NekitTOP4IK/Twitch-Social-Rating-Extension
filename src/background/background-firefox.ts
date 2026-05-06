@@ -5,6 +5,7 @@ import {
   getStored, storeTokens, clearTokens,
   getUserRating, fetchRatingForCard, castVote,
   getAliases, setAlias, deleteAlias, exportAliases, importAliases, syncAliasesWithServer,
+  refreshMe,
 } from './shared';
 
 type Message =
@@ -20,6 +21,7 @@ type Message =
   | { type: 'EXPORT_ALIASES' }
   | { type: 'IMPORT_ALIASES'; data: Array<{ login: string; alias: string }> }
   | { type: 'SYNC_ALIASES' }
+  | { type: 'REFRESH_ME' }
   | { type: 'OAUTH_CALLBACK'; access_token: string; refresh_token: string; login?: string; avatar_url?: string; expires_in?: string };
 
 // ── OAuth login state ─────────────────────────────────────────────────────────
@@ -110,10 +112,14 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
 // IMPORTANT: webextension-polyfill in Firefox requires listeners to return a
 // Promise for async responses. The Chrome-style `sendResponse + return true`
 // pattern does not work reliably with the polyfill.
+//
+// Firefox GCs the returned Promise if the sender port closes before it resolves,
+// logging "Promised response from onMessage listener went out of scope".
+// Keeping live references in a Set prevents premature GC.
 
-browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | undefined => {
-  const msg = message as Message;
-  debug('BG', 'received message:', msg.type, msg);
+const _pending = new Set<Promise<unknown>>();
+
+function handleMessage(msg: Message): Promise<unknown> | undefined {
   switch (msg.type) {
     case 'GET_AUTH':
       return getStored().then(({ accessToken, userLogin, avatarUrl }) => {
@@ -146,6 +152,9 @@ browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | und
       return importAliases(msg.data);
     case 'SYNC_ALIASES':
       return syncAliasesWithServer();
+    case 'REFRESH_ME':
+      debug('BG', 'REFRESH_ME');
+      return refreshMe().then((r) => { debug('BG', 'REFRESH_ME ->', r); return r; });
     case 'OAUTH_CALLBACK': {
       const { access_token: at, refresh_token: rt } = msg;
       debug('BG', 'OAUTH_CALLBACK at=', !!at, 'rt=', !!rt);
@@ -164,6 +173,16 @@ browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | und
       warn('BG', 'unknown message type:', (msg as any).type);
       return undefined;
   }
+}
+
+browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | undefined => {
+  const msg = message as Message;
+  debug('BG', 'received message:', msg.type, msg);
+  const p = handleMessage(msg);
+  if (!p) return undefined;
+  _pending.add(p);
+  p.finally(() => _pending.delete(p));
+  return p;
 });
 
 // ── Sync aliases on startup if authenticated ──────────────────────────────────

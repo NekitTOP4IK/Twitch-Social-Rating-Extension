@@ -7,8 +7,11 @@ module.exports = (env = {}) => {
   const manifestFile = isFirefox ? 'manifest.firefox.json' : 'manifest.json';
 
   const isProd = !!env.prod;
-  const backendUrl = isProd ? 'https://twitchsocial.qzz.io/api' : 'http://localhost:8000';
+  const backendUrl = isProd ? 'https://twitchsocial.qzz.io/api/v1' : 'http://localhost:8000/api/v1';
   const wsBackendUrl = backendUrl.replace(/^http/, 'ws').replace(/^https/, 'wss');
+  // Origin without path — used in CSP connect-src (path-based CSP matching is unreliable in Firefox MV2)
+  const backendOrigin = new URL(backendUrl).origin;
+  const wsBackendOrigin = backendOrigin.replace(/^http/, 'ws').replace(/^https/, 'wss');
 
   return {
     mode: isProd ? 'production' : 'development',
@@ -41,7 +44,7 @@ module.exports = (env = {}) => {
       new webpack.DefinePlugin({
         __BACKEND_URL__: JSON.stringify(backendUrl),
         __WS_BACKEND_URL__: JSON.stringify(wsBackendUrl),
-        __FRONTEND_URL__: JSON.stringify(isProd ? 'https://twitchsocial.qzz.io' : 'http://localhost:8000'),
+        __FRONTEND_URL__: JSON.stringify(isProd ? 'https://twitchsocial.qzz.io' : 'http://localhost:5173'),
       }),
       new CopyPlugin({
         patterns: [
@@ -52,7 +55,9 @@ module.exports = (env = {}) => {
               return content
                 .toString()
                 .replace(/__BACKEND_URL__/g, backendUrl)
-                .replace(/__WS_BACKEND_URL__/g, wsBackendUrl);
+                .replace(/__WS_BACKEND_URL__/g, wsBackendUrl)
+                .replace(/__BACKEND_ORIGIN__/g, backendOrigin)
+                .replace(/__WS_BACKEND_ORIGIN__/g, wsBackendOrigin);
             },
           },
           { from: 'src/popup/popup.html', to: 'popup.html' },

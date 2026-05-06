@@ -5,6 +5,7 @@ import {
   getStored, storeTokens, clearTokens,
   getUserRating, fetchRatingForCard, castVote,
   getAliases, setAlias, deleteAlias, exportAliases, importAliases, syncAliasesWithServer,
+  refreshMe,
 } from './shared';
 
 type Message =
@@ -19,7 +20,8 @@ type Message =
   | { type: 'DELETE_ALIAS'; login: string }
   | { type: 'EXPORT_ALIASES' }
   | { type: 'IMPORT_ALIASES'; data: Array<{ login: string; alias: string }> }
-  | { type: 'SYNC_ALIASES' };
+  | { type: 'SYNC_ALIASES' }
+  | { type: 'REFRESH_ME' };
 
 async function login(): Promise<{ success: boolean; userLogin?: string }> {
   const redirectUri = browser.identity.getRedirectURL('callback');
@@ -84,6 +86,9 @@ browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | und
       return importAliases(msg.data);
     case 'SYNC_ALIASES':
       return syncAliasesWithServer();
+    case 'REFRESH_ME':
+      debug('BG', 'REFRESH_ME');
+      return refreshMe().then((r) => { debug('BG', 'REFRESH_ME ->', r); return r; });
     default:
       debug('BG', 'unknown message type:', (msg as any).type);
       return undefined;

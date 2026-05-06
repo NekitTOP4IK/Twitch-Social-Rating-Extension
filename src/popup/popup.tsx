@@ -393,6 +393,20 @@ function Popup() {
         .catch((e: any) => { error('popup', 'GET_AUTH error:', e); return { authenticated: false, userLogin: null, avatarUrl: null }; })) as AuthState;
       debug('popup', 'GET_AUTH ->', auth);
 
+      let currentAuth = auth;
+      if (currentAuth.authenticated) {
+        const refresh = (await browser.runtime
+          .sendMessage({ type: 'REFRESH_ME' })
+          .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string };
+        if (refresh.ok) {
+          currentAuth = {
+            ...currentAuth,
+            avatarUrl: refresh.avatarUrl ?? currentAuth.avatarUrl,
+            userLogin: refresh.login ?? currentAuth.userLogin,
+          };
+        }
+      }
+
       let channelLogin: string | null = null;
       try {
         const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -404,10 +418,10 @@ function Popup() {
 
       setState((p) => ({
         ...p,
-        auth,
+        auth: currentAuth,
         loading: false,
         channelLogin,
-        ratingLoading: auth.authenticated && channelLogin !== null,
+        ratingLoading: currentAuth.authenticated && channelLogin !== null,
       }));
 
       if (auth.authenticated && channelLogin) {
@@ -435,9 +449,19 @@ function Popup() {
   const handleLogin = async () => {
     setState((p) => ({ ...p, working: true }));
     await browser.runtime.sendMessage({ type: 'LOGIN' }).catch(() => ({ success: false }));
-    const auth = (await browser.runtime
+    let auth = (await browser.runtime
       .sendMessage({ type: 'GET_AUTH' })
       .catch(() => ({ authenticated: false, userLogin: null, avatarUrl: null }))) as AuthState;
+    const refresh = (await browser.runtime
+      .sendMessage({ type: 'REFRESH_ME' })
+      .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string };
+    if (refresh.ok) {
+      auth = {
+        ...auth,
+        avatarUrl: refresh.avatarUrl ?? auth.avatarUrl,
+        userLogin: refresh.login ?? auth.userLogin,
+      };
+    }
     setState((p) => ({ ...p, working: false, auth }));
 
     // Refresh aliases after login

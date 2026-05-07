@@ -1,5 +1,44 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
 node_modules/
+
+# Extension build outputs
 dist/
 dist-chrome/
 dist-firefox/
+web-ext-artifacts/
+*.zip
+*.crx
+*.xpi
+*.pem
+
+# TypeScript / webpack / test output
 *.js.map
+*.tsbuildinfo
+coverage/
+.jest-cache/
+.cache/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local agent/tooling state
+.claude/
+.wolf/
+CLAUDE.md

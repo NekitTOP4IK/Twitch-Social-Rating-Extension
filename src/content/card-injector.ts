@@ -133,10 +133,57 @@ function ensureSeventvStyle(): void {
 
 const WARN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
 
-const PENCIL_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4.5 19.5L8.2 18.7L18.8 8.1L15.9 5.2L5.3 15.8L4.5 19.5Z" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.2 7.9L16.1 10.8" stroke="white" stroke-width="1.6" stroke-linecap="round"/><path d="M5.7 16.2L7.8 18.3" stroke="white" stroke-width="1" stroke-linecap="round"/></svg>`;
+const PENCIL_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" width="22" height="22" rx="3" stroke="white" stroke-width="1.2" fill="none"/>
+  <path
+    d="M4.5 19.5L8.2 18.7L18.8 8.1L15.9 5.2L5.3 15.8L4.5 19.5Z"
+    stroke="white"
+    stroke-width="1.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M13.2 7.9L16.1 10.8"
+    stroke="white"
+    stroke-width="1.2"
+    stroke-linecap="round"
+  />
+  <path
+    d="M5.7 16.2L7.8 18.3"
+    stroke="white"
+    stroke-width="1"
+    stroke-linecap="round"
+  />
+</svg>`;
 
-function swordSvg(bg: string) {
-  return `<svg width="24" height="24" viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg"><rect width="36" height="36" rx="4" fill="${bg}"/><g transform="rotate(45 18 18)"><path fill="#fff" d="M14 6 L18 1.8 L22 6 L21 22 H15 Z"/><rect x="10" y="21" width="16" height="3.5" rx="1" fill="#fff"/><rect x="16" y="24" width="4" height="7" rx="1" fill="#fff"/></g></svg>`;
+const PLUS_ONE_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" width="22" height="22" rx="3" stroke="#0FEE9F" stroke-width="1.2" fill="none"/>
+  <text x="12" y="12" font-family="sans-serif" font-size="12" font-weight="bold" fill="#0FEE9F" text-anchor="middle" dominant-baseline="central">+1</text>
+</svg>`;
+
+const MINUS_ONE_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" width="22" height="22" rx="3" stroke="#EC5B5B" stroke-width="1.2" fill="none"/>
+  <text x="12" y="12" font-family="sans-serif" font-size="12" font-weight="bold" fill="#EC5B5B" text-anchor="middle" dominant-baseline="central">-1</text>
+</svg>`;
+
+function swordSvg(strokeColor: string) {
+  return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" width="22" height="22" rx="3" stroke="${strokeColor}" stroke-width="1.2" fill="none"/>
+  <g transform="translate(12,12) scale(0.66) translate(-18,-18)">
+    <g transform="rotate(45 18 18)">
+      <path fill="none" stroke="${strokeColor}" stroke-width="1.2" d="
+        M14 6
+        L18 1.8
+        L22 6
+        L21 22
+        H15
+        Z
+      "/>
+      <rect x="10" y="21" width="16" height="3.5" rx="1" fill="none" stroke="${strokeColor}" stroke-width="1.2"/>
+      <rect x="16" y="24" width="4" height="7" rx="1" fill="none" stroke="${strokeColor}" stroke-width="1.2"/>
+    </g>
+  </g>
+</svg>`;
 }
 
 function labelText(channel: string, isLow: boolean): string {
@@ -203,7 +250,7 @@ function showToast(container: HTMLElement, text: string, type: 'ok' | 'warn' | '
 function makeVoteBtn(label: string, tint: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.className = 'tsr-vote-btn';
-  btn.textContent = label;
+  btn.innerHTML = label;
   btn.style.cssText = `border:1px solid ${tint}50;color:${tint};`;
   btn.addEventListener('mouseover', () => {
     if (btn.disabled) return;
@@ -342,17 +389,21 @@ export async function injectBadge(
   const isSelf = auth.userLogin != null && auth.userLogin === card.login;
 
   if (auth.authenticated && !isSelf) {
-    const plusBtn = makeVoteBtn('+1', '#00e676');
-    const minusBtn = makeVoteBtn('−1', '#ff5252');
+    const plusBtn = makeVoteBtn(PLUS_ONE_SVG, '#0FEE9F');
+    plusBtn.style.border = 'none';
+    plusBtn.style.color = '';
+    const minusBtn = makeVoteBtn(MINUS_ONE_SVG, '#EC5B5B');
+    minusBtn.style.border = 'none';
+    minusBtn.style.color = '';
 
     const handleVote = async (value: 1 | -1) => {
       const activeBtn = value === 1 ? plusBtn : minusBtn;
       const otherBtn = value === 1 ? minusBtn : plusBtn;
-      const original = activeBtn.textContent ?? '';
+      const original = activeBtn.innerHTML;
 
       plusBtn.disabled = true;
       minusBtn.disabled = true;
-      activeBtn.textContent = '…';
+      activeBtn.innerHTML = '…';
       otherBtn.style.opacity = '0.35';
 
       const res = (await browser.runtime
@@ -366,7 +417,7 @@ export async function injectBadge(
 
       plusBtn.disabled = false;
       minusBtn.disabled = false;
-      activeBtn.textContent = original;
+      activeBtn.innerHTML = original;
       otherBtn.style.opacity = '1';
 
       if (res.ok && res.score !== undefined) {
@@ -502,9 +553,9 @@ export async function injectBadge(
       swordBtn.style.cssText = 'width:24px;height:24px;padding:0;border:none;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;flex-shrink:0;';
 
       const applySwordStyle = () => {
-        const bg = currentIsModerator ? '#E91916' : '#00AD03';
-        swordBtn.style.background = bg;
-        swordBtn.innerHTML = swordSvg(bg);
+        const strokeColor = currentIsModerator ? '#EC5B5B' : '#0FEE9F';
+        swordBtn.style.background = 'transparent';
+        swordBtn.innerHTML = swordSvg(strokeColor);
         swordBtn.title = currentIsModerator ? 'Снять модератора' : 'Назначить модератором';
       };
 

@@ -86,7 +86,7 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
       if (!isExtDone && !isCallbackPage) return;
       try {
         const u = new URL(url);
-        const src = (isCallbackPage && u.hash.length > 1) ? u.hash.slice(1) : u.search.slice(1);
+        const src = u.hash.length > 1 ? u.hash.slice(1) : u.search.slice(1);
         const p = new URLSearchParams(src);
         const at = p.get('access_token');
         const rt = p.get('refresh_token');

@@ -1,6 +1,6 @@
 import browser from 'webextension-polyfill';
 import { DetectedCard } from './card-detector';
-import { ChannelPermissions, RatingData } from '../types';
+import { ChannelPermissions, ChannelRoleItem, RatingData } from '../types';
 
 declare const __FRONTEND_URL__: string;
 
@@ -286,10 +286,10 @@ function getChannelPermissions(channelLogin: string): Promise<ChannelPermissions
   return promise;
 }
 
-async function getChannelModerators(channelLogin: string): Promise<Array<{ login: string; role: string }> | null> {
+async function getChannelModerators(channelLogin: string): Promise<ChannelRoleItem[] | null> {
   if (!channelLogin) return null;
   try {
-    return await browser.runtime.sendMessage({ type: 'GET_CHANNEL_MODERATORS', channelLogin }) as Array<{ login: string; role: string }> | null;
+    return await browser.runtime.sendMessage({ type: 'GET_CHANNEL_MODERATORS', channelLogin }) as ChannelRoleItem[] | null;
   } catch { return null; }
 }
 
@@ -539,7 +539,12 @@ export async function injectBadge(
     }
 
     // ── Sword: moderator toggle ───────────────────────────────────────
-    if (permissions?.can_manage_moderators) {
+    const canManageModerators =
+      permissions?.can_manage_moderators === true &&
+      (permissions.role === 'owner' || permissions.role === 'global_admin');
+    const targetIsChannelOwner = card.login.toLowerCase() === channelLogin.toLowerCase();
+
+    if (canManageModerators && !targetIsChannelOwner) {
       const moderators = await getChannelModerators(channelLogin);
       const isModerator = moderators?.some(
         (m) => m.login.toLowerCase() === card.login.toLowerCase() && m.role === 'moderator',

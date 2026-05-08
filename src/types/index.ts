@@ -24,3 +24,8 @@ export interface ChannelPermissions {
   can_adjust_rating: boolean;
   allowed_modes: Array<'delta' | 'set'>;
 }
+
+export interface ChannelRoleItem {
+  login: string;
+  role: 'owner' | 'moderator';
+}

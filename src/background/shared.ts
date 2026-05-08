@@ -1,4 +1,5 @@
 import browser from 'webextension-polyfill';
+import { ChannelRoleItem } from '../types';
 import { debug, error } from '../utils/logger';
 
 declare const __BACKEND_URL__: string;
@@ -181,6 +182,7 @@ export async function castVote(
 
 export async function getChannelPermissions(channelLogin: string): Promise<{
   role: 'owner' | 'moderator' | 'global_admin' | null;
+  can_manage_moderators: boolean;
   can_adjust_rating: boolean;
   allowed_modes: Array<'delta' | 'set'>;
 } | null> {
@@ -400,7 +402,7 @@ export async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: st
   }
 }
 
-export async function getChannelModerators(channelLogin: string): Promise<Array<{ login: string; role: string }> | null> {
+export async function getChannelModerators(channelLogin: string): Promise<ChannelRoleItem[] | null> {
   const token = await getValidToken();
   if (!token) return null;
   try {
@@ -409,7 +411,7 @@ export async function getChannelModerators(channelLogin: string): Promise<Array<
     });
     if (res.status === 401) { await clearTokens(); return null; }
     if (!res.ok) return null;
-    return await res.json() as Array<{ login: string; role: string }>;
+    return await res.json() as ChannelRoleItem[];
   } catch (e) {
     error('shared', 'getChannelModerators error:', e);
     return null;

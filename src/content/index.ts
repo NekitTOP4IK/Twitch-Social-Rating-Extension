@@ -43,6 +43,12 @@ function getCurrentChannel(): string {
     return modMatch[1].toLowerCase();
   }
 
+  const popoutMatch = pathname.match(/^\/popout\/([a-z0-9_]+)/i);
+  if (popoutMatch) {
+    debug('content', 'popout channel=', popoutMatch[1].toLowerCase());
+    return popoutMatch[1].toLowerCase();
+  }
+
   const m = pathname.match(/^\/([a-z0-9_]+)/i);
   const ch = m ? m[1].toLowerCase() : '';
   debug('content', 'channel=', ch);

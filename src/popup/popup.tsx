@@ -349,6 +349,8 @@ function extractChannelLogin(url: string): string | null {
     if (modIdx !== -1 && parts[modIdx + 1]) return parts[modIdx + 1].toLowerCase();
     const uIdx = parts.indexOf('u');
     if (uIdx !== -1 && parts[uIdx + 1]) return parts[uIdx + 1].toLowerCase();
+    const popoutIdx = parts.indexOf('popout');
+    if (popoutIdx !== -1 && parts[popoutIdx + 1]) return parts[popoutIdx + 1].toLowerCase();
     if (parts.length > 0 && !reserved.includes(parts[0])) return parts[0].toLowerCase();
   } catch { /* noop */ }
   return null;

@@ -224,6 +224,14 @@ function formatNextVoteDate(ts: number): string {
   });
 }
 
+function formatHttpError(error: string): string | null {
+  if (/^5\d\d$/.test(error)) return 'Внутренняя ошибка сервера, попробуйте позже';
+  if (error === '404') return 'Не найдено';
+  if (error === '403') return 'Нет доступа';
+  if (error === '401') return 'Не авторизован — войди через иконку расширения';
+  return null;
+}
+
 function formatVoteError(error: string, nextVoteAt?: number): string {
   if (error.includes('24 hours') || error === '429') {
     const ts = nextVoteAt ? nextVoteAt * 1000 : Date.now() + 86400000;
@@ -233,7 +241,7 @@ function formatVoteError(error: string, nextVoteAt?: number): string {
   if (error.includes('below zero')) return 'Твой рейтинг < 0 — голосование заблокировано';
   if (error === 'not_authenticated') return 'Не авторизован — войди через иконку расширения';
   if (error === 'network_error') return 'Ошибка сети';
-  return error.length < 80 ? error : 'Ошибка голосования';
+  return formatHttpError(error) ?? (error.length < 80 ? error : 'Ошибка голосования');
 }
 
 function showToast(container: HTMLElement, text: string, type: 'ok' | 'warn' | 'err'): void {
@@ -617,7 +625,8 @@ export async function injectBadge(
           applySwordStyle();
           showToast(wrap, currentIsModerator ? 'Модератор назначен' : 'Модератор снят', 'ok');
         } else {
-          showToast(wrap, res.error ?? 'Ошибка', 'err');
+          const errMsg = res.error ? (formatHttpError(res.error) ?? (res.error.length < 80 ? res.error : 'Ошибка')) : 'Ошибка';
+          showToast(wrap, errMsg, 'err');
         }
       });
 

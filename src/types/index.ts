@@ -2,6 +2,7 @@ export interface RatingData {
   login: string;
   score: number;
   isLowRating: boolean;
+  enabled?: boolean;
 }
 
 export interface AuthTokens {

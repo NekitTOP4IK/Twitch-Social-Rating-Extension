@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Twitch Social Rating",
-  "version": "0.1.1",
+  "version": "__VERSION__",
   "description": "Shows social rating for Twitch chat users",
   "icons": {
     "16": "icon.png",
@@ -13,7 +13,8 @@
   "host_permissions": [
     "https://www.twitch.tv/*",
     "https://dashboard.twitch.tv/*",
-    "__BACKEND_URL__/*"
+    "__BACKEND_URL__/*",
+    "__WS_BACKEND_URL__/*"
   ],
   "content_scripts": [
     {

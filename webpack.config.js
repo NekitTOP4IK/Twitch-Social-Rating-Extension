@@ -1,6 +1,7 @@
 const path = require('path');
 const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
+const { version } = require('./package.json');
 
 class StripSourceMappingUrlPlugin {
   apply(compiler) {
@@ -86,6 +87,7 @@ module.exports = (env = {}) => {
             transform(content) {
               return content
                 .toString()
+                .replace(/__VERSION__/g, version)
                 .replace(/__BACKEND_URL__/g, backendUrl)
                 .replace(/__WS_BACKEND_URL__/g, wsBackendUrl)
                 .replace(/__BACKEND_ORIGIN__/g, backendOrigin)

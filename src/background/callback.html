@@ -33,6 +33,7 @@
       var login = params.get('login');
       var avatar_url = params.get('avatar_url');
       var expires_in = params.get('expires_in');
+      var extension_state = params.get('extension_state');
 
       if (!access_token || !refresh_token) {
         msg.textContent = 'Ошибка авторизации. Попробуйте снова.';
@@ -46,6 +47,7 @@
         login: login,
         avatar_url: avatar_url,
         expires_in: expires_in,
+        extension_state: extension_state,
       };
 
       function send() {

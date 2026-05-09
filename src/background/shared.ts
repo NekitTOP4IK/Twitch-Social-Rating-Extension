@@ -4,6 +4,9 @@ import { debug, error } from '../utils/logger';
 
 declare const __BACKEND_URL__: string;
 export const BACKEND_URL = __BACKEND_URL__;
+const API_TIMEOUT_MS = 8_000;
+const LOGOUT_TIMEOUT_MS = 5_000;
+const RATING_CACHE_TTL_MS = 30_000;
 
 export interface StoredAuth {
   accessToken?: string;
@@ -16,6 +19,42 @@ export interface StoredAuth {
 export interface StoredAliases {
   aliases?: Record<string, string>;
   aliasesSyncedAt?: number;
+}
+
+type CardRating = { login: string; score: number; isLowRating: boolean };
+
+const ratingCache = new Map<string, { expiresAt: number; value: CardRating }>();
+const ratingInflight = new Map<string, Promise<CardRating | null>>();
+
+function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${BACKEND_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+async function apiFetch(path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(apiUrl(path), { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function ratingCacheKey(channelLogin: string, login: string): string {
+  return `${channelLogin.trim().toLowerCase()}:${login.trim().toLowerCase()}`;
+}
+
+function setRatingCache(channelLogin: string, login: string, score: number): void {
+  ratingCache.set(ratingCacheKey(channelLogin, login), {
+    expiresAt: Date.now() + RATING_CACHE_TTL_MS,
+    value: { login: login.toLowerCase(), score, isLowRating: score < 0 },
+  });
+}
+
+function clearAuthCaches(): void {
+  ratingCache.clear();
+  ratingInflight.clear();
 }
 
 export async function getStored(): Promise<StoredAuth & StoredAliases> {
@@ -45,9 +84,22 @@ export async function storeTokens(
 }
 
 export async function clearTokens(): Promise<void> {
+  clearAuthCaches();
   await browser.storage.local.remove([
     'accessToken', 'refreshToken', 'expiresAt', 'userLogin', 'avatarUrl',
   ]);
+}
+
+export async function logoutServer(): Promise<void> {
+  const { refreshToken } = await getStored();
+  if (refreshToken) {
+    await apiFetch('/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    }, LOGOUT_TIMEOUT_MS).catch(() => {});
+  }
+  await clearTokens();
 }
 
 async function doRefresh(): Promise<string | null> {
@@ -55,7 +107,7 @@ async function doRefresh(): Promise<string | null> {
   debug('shared', 'doRefresh rt=', !!rt);
   if (!rt) return null;
   try {
-    const res = await fetch(`${BACKEND_URL}/auth/refresh`, {
+    const res = await apiFetch('/auth/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: rt }),
@@ -89,7 +141,7 @@ export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; lo
   debug('shared', 'refreshMe token=', !!token);
   if (!token) return { ok: false };
   try {
-    const res = await fetch(`${BACKEND_URL}/users/me`, {
+    const res = await apiFetch('/users/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
     debug('shared', 'refreshMe res.ok=', res.ok, 'status=', res.status);
@@ -116,8 +168,8 @@ export async function getUserRating(channelLogin: string): Promise<{ score?: num
   const { userLogin } = await getStored();
   if (!userLogin) return null;
   try {
-    const url = `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(userLogin)}`;
-    const res = await fetch(url);
+    const url = `/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(userLogin)}`;
+    const res = await apiFetch(url);
     if (!res.ok) {
       error('shared', 'getUserRating failed:', res.status, url);
       return null;
@@ -132,20 +184,38 @@ export async function getUserRating(channelLogin: string): Promise<{ score?: num
 export async function fetchRatingForCard(
   login: string,
   channelLogin: string,
-): Promise<{ login: string; score: number; isLowRating: boolean } | null> {
-  try {
-    const url = `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      error('shared', 'fetchRatingForCard failed:', res.status, url);
+): Promise<CardRating | null> {
+  const key = ratingCacheKey(channelLogin, login);
+  const cached = ratingCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const existing = ratingInflight.get(key);
+  if (existing) return existing;
+
+  const request = (async (): Promise<CardRating | null> => {
+    try {
+      const url = `/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}`;
+      const res = await apiFetch(url);
+      if (!res.ok) {
+        error('shared', 'fetchRatingForCard failed:', res.status, url);
+        return null;
+      }
+      const data = await res.json();
+      const score = Number(data.score);
+      if (typeof data.login !== 'string' || !Number.isSafeInteger(score)) return null;
+      const value = { login: data.login, score, isLowRating: score < 0 };
+      ratingCache.set(key, { expiresAt: Date.now() + RATING_CACHE_TTL_MS, value });
+      return value;
+    } catch (e) {
+      error('shared', 'fetchRatingForCard network error:', e);
       return null;
+    } finally {
+      ratingInflight.delete(key);
     }
-    const data = await res.json();
-    return { login: data.login, score: data.score, isLowRating: data.score < 0 };
-  } catch (e) {
-    error('shared', 'fetchRatingForCard network error:', e);
-    return null;
-  }
+  })();
+
+  ratingInflight.set(key, request);
+  return request;
 }
 
 export async function castVote(
@@ -157,8 +227,8 @@ export async function castVote(
   debug('shared', 'castVote token=', !!token, 'login=', login, 'channel=', channelLogin, 'value=', value);
   if (!token) return { ok: false, error: 'not_authenticated' };
   try {
-    const url = `${BACKEND_URL}/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}/vote`;
-    const res = await fetch(url, {
+    const url = `/ratings/${encodeURIComponent(channelLogin)}/${encodeURIComponent(login)}/vote`;
+    const res = await apiFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ value }),
@@ -173,6 +243,7 @@ export async function castVote(
       return { ok: false, error: err.detail ?? String(res.status) };
     }
     const data = await res.json();
+    if (Number.isSafeInteger(data.score)) setRatingCache(channelLogin, login, data.score);
     return { ok: true, score: data.score, nextVoteAt: data.next_vote_at };
   } catch (e) {
     error('shared', 'castVote error:', e);
@@ -189,7 +260,7 @@ export async function getChannelPermissions(channelLogin: string): Promise<{
   const token = await getValidToken();
   if (!token) return null;
   try {
-    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/me/permissions`, {
+    const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/me/permissions`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) {
@@ -213,7 +284,7 @@ export async function adjustChannelRating(
   const token = await getValidToken();
   if (!token) return { ok: false, error: 'not_authenticated' };
   try {
-    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/ratings/${encodeURIComponent(login)}/adjust`, {
+    const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/ratings/${encodeURIComponent(login)}/adjust`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ value, mode }),
@@ -227,6 +298,7 @@ export async function adjustChannelRating(
       return { ok: false, error: err.detail ?? String(res.status) };
     }
     const data = await res.json();
+    if (Number.isSafeInteger(data.score)) setRatingCache(channelLogin, login, data.score);
     return { ok: true, score: data.score };
   } catch (e) {
     error('shared', 'adjustChannelRating error:', e);
@@ -258,7 +330,7 @@ export async function setAlias(
   const token = await getValidToken();
   if (token) {
     try {
-      const res = await fetch(`${BACKEND_URL}/aliases`, {
+      const res = await apiFetch('/aliases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ target_login: normalizedLogin, alias: trimmedAlias }),
@@ -286,7 +358,7 @@ export async function deleteAlias(login: string): Promise<{ ok: boolean; error?:
   const token = await getValidToken();
   if (token) {
     try {
-      const res = await fetch(`${BACKEND_URL}/aliases/${encodeURIComponent(normalizedLogin)}`, {
+      const res = await apiFetch(`/aliases/${encodeURIComponent(normalizedLogin)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -332,7 +404,7 @@ export async function importAliases(
   if (token) {
     try {
       const payload = Object.entries(next).map(([login, alias]) => ({ target_login: login, alias }));
-      const res = await fetch(`${BACKEND_URL}/aliases/import`, {
+      const res = await apiFetch('/aliases/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ aliases: payload }),
@@ -358,7 +430,7 @@ export async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: st
   if (!token) return { ok: false, error: 'not_authenticated' };
 
   try {
-    const res = await fetch(`${BACKEND_URL}/aliases`, {
+    const res = await apiFetch('/aliases', {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -388,7 +460,7 @@ export async function syncAliasesWithServer(): Promise<{ ok: boolean; error?: st
     }
 
     if (toPush.length > 0) {
-      await fetch(`${BACKEND_URL}/aliases/import`, {
+      await apiFetch('/aliases/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ aliases: toPush }),
@@ -406,7 +478,7 @@ export async function getChannelModerators(channelLogin: string): Promise<Channe
   const token = await getValidToken();
   if (!token) return null;
   try {
-    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators`, {
+    const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/moderators`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) { await clearTokens(); return null; }
@@ -422,7 +494,7 @@ export async function addChannelModerator(channelLogin: string, targetLogin: str
   const token = await getValidToken();
   if (!token) return { ok: false, error: 'not_authenticated' };
   try {
-    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators`, {
+    const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/moderators`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ login: targetLogin, role: 'moderator' }),
@@ -443,7 +515,7 @@ export async function removeChannelModerator(channelLogin: string, targetLogin: 
   const token = await getValidToken();
   if (!token) return { ok: false, error: 'not_authenticated' };
   try {
-    const res = await fetch(`${BACKEND_URL}/channels/${encodeURIComponent(channelLogin)}/moderators/${encodeURIComponent(targetLogin)}`, {
+    const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/moderators/${encodeURIComponent(targetLogin)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });

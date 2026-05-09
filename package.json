@@ -1,6 +1,7 @@
 {
   "name": "twitch-social-rating-extension",
-  "version": "0.1.1",
+  "version": "0.1.2",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "build": "webpack --config webpack.config.js",
@@ -12,8 +13,8 @@
     "build:all": "npm run build && npm run build:firefox",
     "build:all:prod": "npm run build:prod && npm run build:prod:firefox",
     "build:all:store": "npm run build:chrome:store && npm run build:firefox:amo",
-    "package:chrome": "npm run build:chrome:store && node scripts/package-extension.mjs dist-chrome web-ext-artifacts/twitch-social-rating-chrome-0.1.1.zip",
-    "package:firefox": "npm run build:firefox:amo && node scripts/package-extension.mjs dist-firefox web-ext-artifacts/twitch-social-rating-firefox-0.1.1.zip",
+    "package:chrome": "npm run build:chrome:store && node scripts/package-extension.mjs dist-chrome web-ext-artifacts/twitch-social-rating-chrome-$npm_package_version.zip",
+    "package:firefox": "npm run build:firefox:amo && node scripts/package-extension.mjs dist-firefox web-ext-artifacts/twitch-social-rating-firefox-$npm_package_version.zip",
     "package:all": "npm run package:chrome && npm run package:firefox",
     "amo:sign:unlisted": "npm run build:firefox:amo && npx web-ext sign --source-dir dist-firefox --artifacts-dir web-ext-artifacts --channel unlisted",
     "watch": "webpack --watch --config webpack.config.js",

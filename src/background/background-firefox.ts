@@ -1,35 +1,15 @@
 import browser from 'webextension-polyfill';
 import { debug, warn } from '../utils/logger';
+import { Message, parseMessage } from './messages';
 import {
   BACKEND_URL,
-  getStored, storeTokens, clearTokens,
+  getStored, storeTokens, logoutServer,
   getUserRating, fetchRatingForCard, castVote,
   getAliases, setAlias, deleteAlias, exportAliases, importAliases, syncAliasesWithServer,
   refreshMe,
   getChannelPermissions, adjustChannelRating,
   getChannelModerators, addChannelModerator, removeChannelModerator,
 } from './shared';
-
-type Message =
-  | { type: 'GET_AUTH' }
-  | { type: 'LOGIN' }
-  | { type: 'LOGOUT' }
-  | { type: 'GET_USER_RATING'; channelLogin: string }
-  | { type: 'FETCH_RATING'; login: string; channelLogin: string }
-  | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 }
-  | { type: 'GET_CHANNEL_PERMISSIONS'; channelLogin: string }
-  | { type: 'ADJUST_CHANNEL_RATING'; login: string; channelLogin: string; value: number; mode: 'delta' | 'set' }
-  | { type: 'GET_CHANNEL_MODERATORS'; channelLogin: string }
-  | { type: 'ADD_CHANNEL_MODERATOR'; channelLogin: string; targetLogin: string }
-  | { type: 'REMOVE_CHANNEL_MODERATOR'; channelLogin: string; targetLogin: string }
-  | { type: 'GET_ALIASES' }
-  | { type: 'SET_ALIAS'; login: string; alias: string }
-  | { type: 'DELETE_ALIAS'; login: string }
-  | { type: 'EXPORT_ALIASES' }
-  | { type: 'IMPORT_ALIASES'; data: Array<{ login: string; alias: string }> }
-  | { type: 'SYNC_ALIASES' }
-  | { type: 'REFRESH_ME' }
-  | { type: 'OAUTH_CALLBACK'; access_token: string; refresh_token: string; login?: string; avatar_url?: string; expires_in?: string };
 
 // ── OAuth login state ─────────────────────────────────────────────────────────
 // Primary: callback.html sends OAUTH_CALLBACK message after page load.
@@ -40,8 +20,16 @@ type LoginResolve = (r: { success: boolean; userLogin?: string }) => void;
 
 let loginResolve: LoginResolve | null = null;
 let loginTabId: number | null = null;
+let loginState: string | null = null;
 let loginUpdListener: ((tid: number, ci: browser.Tabs.OnUpdatedChangeInfoType) => void) | null = null;
 let loginRmvListener: ((tid: number) => void) | null = null;
+
+function createLoginState(): string {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 function cleanupListeners(): void {
   if (loginUpdListener) { browser.tabs.onUpdated.removeListener(loginUpdListener); loginUpdListener = null; }
@@ -54,6 +42,7 @@ function finishLogin(result: { success: boolean; userLogin?: string }, closeTab 
   const resolve = loginResolve;
   loginTabId = null;
   loginResolve = null;
+  loginState = null;
   if (resolve) resolve(result);
   if (closeTab && tid != null) browser.tabs.remove(tid).catch(() => {});
 }
@@ -62,9 +51,11 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
   if (loginResolve) finishLogin({ success: false }, true);
 
   const callbackUrl = browser.runtime.getURL('callback.html');
+  loginState = createLoginState();
   const authUrl =
     `${BACKEND_URL}/auth/twitch` +
-    `?extension_redirect_uri=${encodeURIComponent(callbackUrl)}`;
+    `?extension_redirect_uri=${encodeURIComponent(callbackUrl)}` +
+    `&extension_state=${encodeURIComponent(loginState)}`;
 
   let tab: browser.Tabs.Tab;
   try {
@@ -90,6 +81,8 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
         const p = new URLSearchParams(src);
         const at = p.get('access_token');
         const rt = p.get('refresh_token');
+        const returnedState = p.get('extension_state');
+        if (!loginState || returnedState !== loginState) return;
         if (!at || !rt) return;
         const ul = p.get('login') ?? undefined;
         const av = p.get('avatar_url') ?? undefined;
@@ -138,7 +131,7 @@ function handleMessage(msg: Message): Promise<unknown> | undefined {
       debug('BG', 'LOGIN start');
       return login().then((r) => { debug('BG', 'LOGIN ->', r); return r; });
     case 'LOGOUT':
-      return clearTokens().then(() => ({ success: true }));
+      return logoutServer().then(() => ({ success: true }));
     case 'GET_USER_RATING':
       debug('BG', 'GET_USER_RATING channel=', msg.channelLogin);
       return getUserRating(msg.channelLogin).then((r) => { debug('BG', 'GET_USER_RATING ->', r); return r; });
@@ -175,6 +168,9 @@ function handleMessage(msg: Message): Promise<unknown> | undefined {
     case 'OAUTH_CALLBACK': {
       const { access_token: at, refresh_token: rt } = msg;
       debug('BG', 'OAUTH_CALLBACK at=', !!at, 'rt=', !!rt);
+      if (!loginResolve || !loginState || msg.extension_state !== loginState) {
+        return Promise.resolve({ ok: false });
+      }
       if (!at || !rt) {
         finishLogin({ success: false }, true);
         return Promise.resolve({ ok: false });
@@ -192,8 +188,9 @@ function handleMessage(msg: Message): Promise<unknown> | undefined {
   }
 }
 
-browser.runtime.onMessage.addListener((message: unknown): Promise<unknown> | undefined => {
-  const msg = message as Message;
+browser.runtime.onMessage.addListener((message: unknown, sender: browser.Runtime.MessageSender): Promise<unknown> | undefined => {
+  const msg = parseMessage(message, sender, { allowOAuthCallback: true });
+  if (!msg) return Promise.resolve({ ok: false, error: 'bad_request' });
   debug('BG', 'received message:', msg.type, msg);
   const p = handleMessage(msg);
   if (!p) return undefined;

@@ -272,25 +272,50 @@ function makeIconBtn(label: string, tint: string): HTMLButtonElement {
   return btn;
 }
 
-const permissionCache = new Map<string, Promise<ChannelPermissions | null>>();
+const PERMISSION_CACHE_TTL_MS = 60_000;
+const MODERATOR_CACHE_TTL_MS = 30_000;
+const permissionCache = new Map<string, { expiresAt: number; promise: Promise<ChannelPermissions | null> }>();
+const moderatorCache = new Map<string, { expiresAt: number; promise: Promise<ChannelRoleItem[] | null> }>();
 
 function getChannelPermissions(channelLogin: string): Promise<ChannelPermissions | null> {
   if (!channelLogin) return Promise.resolve(null);
   const cached = permissionCache.get(channelLogin);
-  if (cached) return cached;
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
   const promise = browser.runtime
     .sendMessage({ type: 'GET_CHANNEL_PERMISSIONS', channelLogin })
     .then((res) => (res as ChannelPermissions | null) ?? null)
     .catch(() => null);
-  permissionCache.set(channelLogin, promise);
+  permissionCache.set(channelLogin, { expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS, promise });
   return promise;
 }
 
 async function getChannelModerators(channelLogin: string): Promise<ChannelRoleItem[] | null> {
   if (!channelLogin) return null;
+  const cached = moderatorCache.get(channelLogin);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = browser.runtime
+    .sendMessage({ type: 'GET_CHANNEL_MODERATORS', channelLogin })
+    .then((res) => (res as ChannelRoleItem[] | null) ?? null)
+    .catch(() => null);
+  moderatorCache.set(channelLogin, { expiresAt: Date.now() + MODERATOR_CACHE_TTL_MS, promise });
+  return promise;
+}
+
+function invalidateChannelCaches(channelLogin: string): void {
+  permissionCache.delete(channelLogin);
+  moderatorCache.delete(channelLogin);
+}
+
+async function sendModeratorAction(action: {
+  type: 'ADD_CHANNEL_MODERATOR' | 'REMOVE_CHANNEL_MODERATOR';
+  channelLogin: string;
+  targetLogin: string;
+}): Promise<{ ok: boolean; error?: string }> {
   try {
-    return await browser.runtime.sendMessage({ type: 'GET_CHANNEL_MODERATORS', channelLogin }) as ChannelRoleItem[] | null;
-  } catch { return null; }
+    return await browser.runtime.sendMessage(action) as { ok: boolean; error?: string };
+  } catch {
+    return { ok: false, error: 'network_error' };
+  }
 }
 
 // ── Injection target ──────────────────────────────────────────────────────────
@@ -577,15 +602,17 @@ export async function injectBadge(
         e.stopPropagation();
         e.preventDefault();
         swordBtn.disabled = true;
-        const action = currentIsModerator
+        const action: {
+          type: 'ADD_CHANNEL_MODERATOR' | 'REMOVE_CHANNEL_MODERATOR';
+          channelLogin: string;
+          targetLogin: string;
+        } = currentIsModerator
           ? { type: 'REMOVE_CHANNEL_MODERATOR', channelLogin, targetLogin: card.login }
           : { type: 'ADD_CHANNEL_MODERATOR', channelLogin, targetLogin: card.login };
-        const res = (await browser.runtime.sendMessage(action).catch(() => ({ ok: false, error: 'network_error' }))) as {
-          ok: boolean;
-          error?: string;
-        };
+        const res = await sendModeratorAction(action);
         swordBtn.disabled = false;
         if (res.ok) {
+          invalidateChannelCaches(channelLogin);
           currentIsModerator = !currentIsModerator;
           applySwordStyle();
           showToast(wrap, currentIsModerator ? 'Модератор назначен' : 'Модератор снят', 'ok');

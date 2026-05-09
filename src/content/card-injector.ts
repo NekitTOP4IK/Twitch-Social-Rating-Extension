@@ -241,6 +241,7 @@ function formatVoteError(error: string, nextVoteAt?: number): string {
   if (error.includes('below zero')) return 'Твой рейтинг < 0 — голосование заблокировано';
   if (error === 'not_authenticated') return 'Не авторизован — войди через иконку расширения';
   if (error === 'network_error') return 'Ошибка сети';
+  if (error.includes('not enabled for this channel')) return 'Система рейтинга не включена на этом канале';
   return formatHttpError(error) ?? (error.length < 80 ? error : 'Ошибка голосования');
 }
 

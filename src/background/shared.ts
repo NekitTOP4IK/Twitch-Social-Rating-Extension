@@ -113,7 +113,8 @@ async function doRefresh(): Promise<string | null> {
       body: JSON.stringify({ refresh_token: rt }),
     });
     debug('shared', 'doRefresh res.ok=', res.ok, 'status=', res.status);
-    if (!res.ok) { await clearTokens(); return null; }
+    if (res.status === 401) { await clearTokens(); return null; }
+    if (!res.ok) return null;
     const data = await res.json();
     await browser.storage.local.set({
       accessToken: data.access_token,
@@ -201,6 +202,7 @@ export async function fetchRatingForCard(
         return null;
       }
       const data = await res.json();
+      if (data.enabled === false) return null;
       const score = Number(data.score);
       if (typeof data.login !== 'string' || !Number.isSafeInteger(score)) return null;
       const value = { login: data.login, score, isLowRating: score < 0 };

@@ -1,4 +1,4 @@
-import { debug, error } from '../utils/logger';
+import { debug } from '../utils/logger';
 import { detectCardLogin } from './card-detector';
 import { injectBadge, updateBadgeScore } from './card-injector';
 import { fetchRating } from './api';
@@ -81,6 +81,7 @@ async function handleElement(el: Element): Promise<void> {
     debug('content', 'handleElement card.login=', card.login, 'channel=', channel, 'type=', card.type);
     const rating = await fetchRating(card.login, channel);
     debug('content', 'handleElement rating=', rating);
+    if (rating === null) return;
     await injectBadge(card, rating, channel);
 
     // Inject edit/reset controls into the card

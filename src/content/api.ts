@@ -1,6 +1,7 @@
 import browser from 'webextension-polyfill';
 import { debug, error } from '../utils/logger';
 import { RatingData } from '../types';
+import { ActiveBadgeGrant } from '../types';
 
 export async function fetchRating(
   login: string,
@@ -18,6 +19,62 @@ export async function fetchRating(
   } catch (e) {
     error('api', 'fetchRating error:', e);
     return null;
+  }
+}
+
+export async function fetchBadgeGrants(
+  channelLogin: string,
+  logins: string[],
+): Promise<ActiveBadgeGrant[]> {
+  try {
+    const result = await browser.runtime.sendMessage({
+      type: 'FETCH_BADGE_GRANTS',
+      channelLogin,
+      logins,
+    });
+    return Array.isArray(result) ? result as ActiveBadgeGrant[] : [];
+  } catch (e) {
+    error('api', 'fetchBadgeGrants error:', e);
+    return [];
+  }
+}
+
+export async function prefetchChannelBadgeGrants(channelLogin: string): Promise<void> {
+  try {
+    await browser.runtime.sendMessage({
+      type: 'PREFETCH_CHANNEL_BADGE_GRANTS',
+      channelLogin,
+    });
+  } catch (e) {
+    error('api', 'prefetchChannelBadgeGrants error:', e);
+  }
+}
+
+export async function refreshChannelBadgeGrants(channelLogin: string): Promise<void> {
+  try {
+    await browser.runtime.sendMessage({
+      type: 'REFRESH_CHANNEL_BADGE_GRANTS',
+      channelLogin,
+    });
+  } catch (e) {
+    error('api', 'refreshChannelBadgeGrants error:', e);
+  }
+}
+
+export async function getChannelGrantsForLogin(
+  channelLogin: string,
+  login: string,
+): Promise<ActiveBadgeGrant[]> {
+  try {
+    const result = await browser.runtime.sendMessage({
+      type: 'GET_CHANNEL_BADGE_GRANTS_FOR_LOGIN',
+      channelLogin,
+      login,
+    });
+    return Array.isArray(result) ? result as ActiveBadgeGrant[] : [];
+  } catch (e) {
+    error('api', 'getChannelGrantsForLogin error:', e);
+    return [];
   }
 }
 

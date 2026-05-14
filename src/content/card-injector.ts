@@ -1,6 +1,7 @@
 import browser from 'webextension-polyfill';
 import { DetectedCard } from './card-detector';
-import { ChannelPermissions, ChannelRoleItem, RatingData } from '../types';
+import { getChannelGrantsForLogin } from './api';
+import { ActiveBadgeGrant, ChannelPermissions, ChannelRoleItem, RatingData } from '../types';
 
 declare const __FRONTEND_URL__: string;
 
@@ -71,6 +72,82 @@ function ensureBadgeStyle(): void {
       line-height: 1;
       flex: 1;
     }
+    [data-tsr-badge] .tsr-awards {
+      display: grid;
+      gap: 4px;
+      position: relative;
+      z-index: 1;
+    }
+    [data-tsr-badge] .tsr-award {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 8px;
+      border: 1px solid #2a2a2d;
+      border-left-width: 3px;
+      background: #18181b;
+    }
+    [data-tsr-badge] .tsr-award--high {
+      border-left-color: #d6a43a;
+      background: linear-gradient(90deg, rgba(214,164,58,0.12), #18181b 48%);
+    }
+    [data-tsr-badge] .tsr-award--low {
+      border-left-color: #b94a4a;
+      background: linear-gradient(90deg, rgba(185,74,74,0.13), #18181b 48%);
+    }
+    [data-tsr-badge] .tsr-award__mark {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #adadb8;
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    [data-tsr-badge] .tsr-award__mark img {
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
+      display: block;
+    }
+    [data-tsr-badge] .tsr-award__copy {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+    [data-tsr-badge] .tsr-award__title {
+      color: #efeff1;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    [data-tsr-badge] .tsr-award__text {
+      color: #adadb8;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    [data-tsr-badge] .tsr-award__rank {
+      font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1;
+      padding: 4px 6px;
+      border: 1px solid #3a3a3d;
+      color: #efeff1;
+      background: #0e0e10;
+    }
     [data-tsr-badge] .tsr-vote-btn {
       border-radius: 0;
       height: 24px;
@@ -106,8 +183,6 @@ function ensureSeventvStyle(): void {
   if (document.getElementById('tsr-seventv-style')) return;
   const style = document.createElement('style');
   style.id = 'tsr-seventv-style';
-  // Without explicit height, the card's 1fr data row doesn't shrink when the
-  // header grows — causing the message list to overflow the card boundary.
   style.textContent = `
     .seventv-user-card-container:has([data-tsr-badge]) .seventv-user-card {
       max-height: 80vh !important;
@@ -188,7 +263,7 @@ function swordSvg(strokeColor: string) {
 
 function labelText(channel: string, isLow: boolean): string {
   const prefix = channel ? `${channel} / ` : '';
-  return `${prefix}${isLow ? 'Низкий рейтинг' : 'Социальный рейтинг'}`;
+  return `${prefix}${isLow ? 'Низкий рейтинг' : 'Свагометр (соц. рейтинг)'}`;
 }
 
 function setLabel(el: HTMLElement, channel: string, isLow: boolean): void {
@@ -196,6 +271,93 @@ function setLabel(el: HTMLElement, channel: string, isLow: boolean): void {
   el.innerHTML = isLow
     ? `${WARN_SVG}<span>${labelText(channel, true)}</span>`
     : `<span>${labelText(channel, false)}</span>`;
+}
+
+function awardTitle(grant: ActiveBadgeGrant): string {
+  return grant.kind === 'high' ? 'Пупсик чата' : 'Напёрдыш чата';
+}
+
+function awardText(grant: ActiveBadgeGrant): string {
+  return grant.period_label ? `за ${grant.period_label}` : 'за закрытый период';
+}
+
+function sortAwards(grants: ActiveBadgeGrant[]): ActiveBadgeGrant[] {
+  return [...grants].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'high' ? -1 : 1;
+    return a.rank - b.rank;
+  });
+}
+
+function createAwardCard(grant: ActiveBadgeGrant): HTMLElement {
+  const item = document.createElement('div');
+  item.className = `tsr-award tsr-award--${grant.kind}`;
+  item.title = grant.title;
+
+  const mark = document.createElement('div');
+  mark.className = 'tsr-award__mark';
+  if (grant.image_url) {
+    const img = document.createElement('img');
+    img.alt = grant.title;
+    img.onerror = () => {
+      img.remove();
+      mark.textContent = grant.kind === 'high' ? '★' : '!';
+    };
+    mark.appendChild(img);
+    if (grant.image_url.startsWith('http://')) {
+      browser.runtime.sendMessage({ type: 'FETCH_IMAGE', url: grant.image_url })
+        .then((res: any) => { if (res?.dataUrl) img.src = res.dataUrl; })
+        .catch(() => { mark.textContent = grant.kind === 'high' ? '★' : '!'; });
+    } else {
+      img.src = grant.image_url;
+    }
+  } else {
+    mark.textContent = grant.kind === 'high' ? '★' : '!';
+  }
+
+  const copy = document.createElement('div');
+  copy.className = 'tsr-award__copy';
+
+  const title = document.createElement('div');
+  title.className = 'tsr-award__title';
+  title.textContent = awardTitle(grant);
+
+  const text = document.createElement('div');
+  text.className = 'tsr-award__text';
+  text.textContent = awardText(grant);
+
+  const rank = document.createElement('div');
+  rank.className = 'tsr-award__rank';
+  rank.textContent = `#${grant.rank}`;
+
+  copy.appendChild(title);
+  copy.appendChild(text);
+  item.appendChild(mark);
+  item.appendChild(copy);
+  item.appendChild(rank);
+  return item;
+}
+
+async function renderAwards(
+  container: HTMLElement,
+  channelLogin: string,
+  login: string,
+  before?: Element | null,
+): Promise<void> {
+  if (!channelLogin || !login) return;
+  container.querySelectorAll('.tsr-awards').forEach((el) => el.remove());
+  const grants = sortAwards(await getChannelGrantsForLogin(channelLogin, login));
+  if (grants.length === 0) return;
+
+  const awards = document.createElement('div');
+  awards.className = 'tsr-awards';
+  for (const grant of grants.slice(0, 2)) {
+    awards.appendChild(createAwardCard(grant));
+  }
+  if (before?.parentElement === container) {
+    container.insertBefore(awards, before);
+  } else {
+    container.appendChild(awards);
+  }
 }
 
 // ── Score helpers ─────────────────────────────────────────────────────────────
@@ -215,6 +377,13 @@ function scoreAccent(score: number): string {
 function scoreText(score: number): string {
   if (score > 0) return `+${score}`;
   return `${score}`;
+}
+
+function renderDualScore(el: HTMLElement, swag: number, social: number): void {
+  el.style.color = scoreFg(swag);
+  el.innerHTML =
+    `<span>${scoreText(swag)}</span>` +
+    `<span style="font-size:0.55em;color:${scoreFg(social)};opacity:0.8;margin-left:4px;font-weight:600">(${scoreText(social)})</span>`;
 }
 
 function formatNextVoteDate(ts: number): string {
@@ -238,7 +407,7 @@ function formatVoteError(error: string, nextVoteAt?: number): string {
     return `Подожди! Следующее голосование ${formatNextVoteDate(ts)}`;
   }
   if (error.includes('yourself')) return 'Нельзя голосовать за себя';
-  if (error.includes('below zero')) return 'Твой рейтинг < 0 — голосование заблокировано';
+  if (error.includes('below zero')) return 'Твой рейтинг < 10 — голосование заблокировано';
   if (error === 'not_authenticated') return 'Не авторизован — войди через иконку расширения';
   if (error === 'network_error') return 'Ошибка сети';
   if (error.includes('not enabled for this channel')) return 'Система рейтинга не включена на этом канале';
@@ -366,22 +535,21 @@ export async function injectBadge(
   ensureBadgeStyle();
   card.element.querySelector(`[${BADGE_ATTR}]`)?.remove();
 
-  const score = rating?.score ?? 0;
+  const swagScore = rating?.swag_score ?? rating?.score ?? 0;
+  let socialScore = rating?.social_score ?? 0;
+  const score = swagScore;
   const isLow = rating?.isLowRating ?? score < 0;
   const accent = scoreAccent(score);
 
-  // Root wrapper
   const wrap = document.createElement('div');
   wrap.setAttribute(BADGE_ATTR, card.login);
   if (channelLogin) wrap.setAttribute(CHANNEL_ATTR, channelLogin);
 
-  // Left accent stripe
   const stripe = document.createElement('div');
   stripe.className = 'tsr-stripe';
   stripe.style.cssText = `background:${accent};box-shadow:4px 0 16px 4px ${accent}30,2px 0 6px 2px ${accent}50;`;
   wrap.appendChild(stripe);
 
-  // Row 1: label (left) + profile link (right)
   const topRow = document.createElement('div');
   topRow.className = 'tsr-row';
 
@@ -403,14 +571,14 @@ export async function injectBadge(
 
   wrap.appendChild(topRow);
 
-  // Row 2: score (left) + vote buttons (right)
+  await renderAwards(wrap, channelLogin, card.login);
+
   const bottomRow = document.createElement('div');
   bottomRow.className = 'tsr-row';
 
   const scoreEl = document.createElement('span');
   scoreEl.setAttribute(SCORE_ATTR, '');
-  scoreEl.style.color = scoreFg(score);
-  scoreEl.textContent = scoreText(score);
+  renderDualScore(scoreEl, swagScore, socialScore);
   bottomRow.appendChild(scoreEl);
 
   const auth = (await browser.runtime
@@ -445,6 +613,7 @@ export async function injectBadge(
         .catch(() => ({ ok: false, error: 'network_error' }))) as {
         ok: boolean;
         score?: number;
+        social_score?: number;
         error?: string;
         nextVoteAt?: number;
       };
@@ -456,14 +625,14 @@ export async function injectBadge(
 
       if (res.ok && res.score !== undefined) {
         const ns = res.score;
+        socialScore = res.social_score ?? socialScore;
         const newAccent = scoreAccent(ns);
         stripe.style.background = newAccent;
         stripe.style.boxShadow = `4px 0 16px 4px ${newAccent}30,2px 0 6px 2px ${newAccent}50`;
-        scoreEl.style.color = scoreFg(ns);
-        scoreEl.textContent = scoreText(ns);
+        renderDualScore(scoreEl, ns, socialScore);
         setLabel(label, channelLogin, ns < 0);
         const nextTs = res.nextVoteAt ? res.nextVoteAt * 1000 : Date.now() + 86400000;
-        showToast(wrap, `Голос принят. Новый рейтинг ${scoreText(ns)}. Следующее голосование ${formatNextVoteDate(nextTs)}`, 'ok');
+        showToast(wrap, `Голос принят. Свагометр ${scoreText(ns)}. Следующее голосование ${formatNextVoteDate(nextTs)}`, 'ok');
       } else {
         const msg = formatVoteError(res.error ?? '', res.nextVoteAt);
         showToast(wrap, msg, msg.startsWith('Подожди') ? 'warn' : 'err');
@@ -638,7 +807,6 @@ export async function injectBadge(
 
   wrap.appendChild(bottomRow);
 
-  // Inject
   const target = findTarget(card);
   if (!target) return;
 
@@ -680,5 +848,17 @@ export function updateBadgeScore(login: string, score: number): void {
   const labelEl = wrap.querySelector<HTMLElement>(`[${LABEL_ATTR}]`);
   if (labelEl) {
     setLabel(labelEl, wrap.getAttribute(CHANNEL_ATTR) ?? '', score < 0);
+  }
+}
+
+export async function refreshOpenCardAwards(channelLogin: string): Promise<void> {
+  const wraps = Array.from(
+    document.querySelectorAll<HTMLElement>(`[${BADGE_ATTR}][${CHANNEL_ATTR}="${CSS.escape(channelLogin)}"]`),
+  );
+
+  for (const wrap of wraps) {
+    const login = wrap.getAttribute(BADGE_ATTR) ?? '';
+    const rows = wrap.querySelectorAll('.tsr-row');
+    await renderAwards(wrap, channelLogin, login, rows[1] ?? null);
   }
 }

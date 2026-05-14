@@ -10,6 +10,10 @@ export type Message =
   | { type: 'LOGOUT' }
   | { type: 'GET_USER_RATING'; channelLogin: string }
   | { type: 'FETCH_RATING'; login: string; channelLogin: string }
+  | { type: 'FETCH_BADGE_GRANTS'; channelLogin: string; logins: string[] }
+  | { type: 'PREFETCH_CHANNEL_BADGE_GRANTS'; channelLogin: string }
+  | { type: 'REFRESH_CHANNEL_BADGE_GRANTS'; channelLogin: string }
+  | { type: 'GET_CHANNEL_BADGE_GRANTS_FOR_LOGIN'; channelLogin: string; login: string }
   | { type: 'CAST_VOTE'; login: string; channelLogin: string; value: 1 | -1 }
   | { type: 'GET_CHANNEL_PERMISSIONS'; channelLogin: string }
   | { type: 'ADJUST_CHANNEL_RATING'; login: string; channelLogin: string; value: number; mode: 'delta' | 'set' }
@@ -23,6 +27,7 @@ export type Message =
   | { type: 'IMPORT_ALIASES'; data: Array<{ login: string; alias: string }> }
   | { type: 'SYNC_ALIASES' }
   | { type: 'REFRESH_ME' }
+  | { type: 'FETCH_IMAGE'; url: string }
   | { type: 'OAUTH_CALLBACK'; access_token: string; refresh_token: string; login?: string; avatar_url?: string; expires_in?: string; extension_state?: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,6 +100,34 @@ export function parseMessage(
       return login && channelLogin ? { type: 'FETCH_RATING', login, channelLogin } : null;
     }
 
+    case 'FETCH_BADGE_GRANTS': {
+      const channelLogin = normalizeLogin(message.channelLogin);
+      if (!channelLogin || !Array.isArray(message.logins) || message.logins.length > 100) return null;
+      const logins: string[] = [];
+      for (const raw of message.logins) {
+        const login = normalizeLogin(raw);
+        if (!login) return null;
+        logins.push(login);
+      }
+      return { type: 'FETCH_BADGE_GRANTS', channelLogin, logins };
+    }
+
+    case 'PREFETCH_CHANNEL_BADGE_GRANTS': {
+      const channelLogin = normalizeLogin(message.channelLogin);
+      return channelLogin ? { type: 'PREFETCH_CHANNEL_BADGE_GRANTS', channelLogin } : null;
+    }
+
+    case 'REFRESH_CHANNEL_BADGE_GRANTS': {
+      const channelLogin = normalizeLogin(message.channelLogin);
+      return channelLogin ? { type: 'REFRESH_CHANNEL_BADGE_GRANTS', channelLogin } : null;
+    }
+
+    case 'GET_CHANNEL_BADGE_GRANTS_FOR_LOGIN': {
+      const channelLogin = normalizeLogin(message.channelLogin);
+      const login = normalizeLogin(message.login);
+      return channelLogin && login ? { type: 'GET_CHANNEL_BADGE_GRANTS_FOR_LOGIN', channelLogin, login } : null;
+    }
+
     case 'CAST_VOTE': {
       const login = normalizeLogin(message.login);
       const channelLogin = normalizeLogin(message.channelLogin);
@@ -151,6 +184,12 @@ export function parseMessage(
         data.push({ login, alias });
       }
       return { type: 'IMPORT_ALIASES', data };
+    }
+
+    case 'FETCH_IMAGE': {
+      const url = message.url;
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
+      return { type: 'FETCH_IMAGE', url };
     }
 
     case 'OAUTH_CALLBACK': {

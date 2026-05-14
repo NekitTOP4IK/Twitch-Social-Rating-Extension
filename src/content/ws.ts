@@ -6,10 +6,12 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const LOGIN_RE = /^[a-z0-9_]{3,25}$/;
 
 export type RatingUpdateCallback = (login: string, score: number) => void;
+export type BadgeGrantsUpdateCallback = (channelLogin: string) => void;
 
 let socket: WebSocket | null = null;
 let activeChannel: string | null = null;
 let onUpdateCb: RatingUpdateCallback | null = null;
+let onBadgeGrantsUpdateCb: BadgeGrantsUpdateCallback | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let openTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
@@ -76,10 +78,17 @@ function connect(channelLogin: string): void {
       if (data?.type === 'ping') return;
       if (data.type === 'rating_update' && onUpdateCb) {
         if (typeof data.channel === 'string' && data.channel.toLowerCase() !== channelLogin) return;
-        if (!isValidLogin(data.login) || !isValidScore(data.score)) return;
-        onUpdateCb(data.login, data.score);
+        const score = data.swag_score ?? data.score;
+        if (!isValidLogin(data.login) || !isValidScore(score)) return;
+        onUpdateCb(data.login, score);
       }
-    } catch { /* ignore */ }
+      if (data.type === 'badge_grants_updated' && onBadgeGrantsUpdateCb) {
+        if (typeof data.channel !== 'string') return;
+        const updatedChannel = normalizeChannel(data.channel);
+        if (updatedChannel !== channelLogin || !LOGIN_RE.test(updatedChannel)) return;
+        onBadgeGrantsUpdateCb(updatedChannel);
+      }
+    } catch {}
   });
 
   ws.addEventListener('error', () => { /* close fires after error — reconnect handled there */ });
@@ -94,6 +103,7 @@ function connect(channelLogin: string): void {
 export function connectWebSocket(
   channelLogin: string,
   onUpdate: RatingUpdateCallback,
+  onBadgeGrantsUpdate?: BadgeGrantsUpdateCallback,
 ): void {
   const normalizedChannel = normalizeChannel(channelLogin);
   if (!LOGIN_RE.test(normalizedChannel)) return;
@@ -101,6 +111,7 @@ export function connectWebSocket(
   disconnectWebSocket();
   activeChannel = normalizedChannel;
   onUpdateCb = onUpdate;
+  onBadgeGrantsUpdateCb = onBadgeGrantsUpdate ?? null;
   reconnectAttempt = 0;
   window.addEventListener('online', handleOnline);
   connect(normalizedChannel);
@@ -109,6 +120,7 @@ export function connectWebSocket(
 export function disconnectWebSocket(): void {
   activeChannel = null;
   onUpdateCb = null;
+  onBadgeGrantsUpdateCb = null;
   reconnectTimer = clearTimer(reconnectTimer);
   openTimer = clearTimer(openTimer);
   reconnectAttempt = 0;

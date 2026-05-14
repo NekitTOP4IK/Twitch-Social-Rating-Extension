@@ -1,8 +1,13 @@
 import { debug } from '../utils/logger';
 import { detectCardLogin } from './card-detector';
-import { injectBadge, updateBadgeScore } from './card-injector';
-import { fetchRating } from './api';
+import { injectBadge, updateBadgeScore, refreshOpenCardAwards } from './card-injector';
+import { fetchRating, prefetchChannelBadgeGrants, refreshChannelBadgeGrants } from './api';
 import { connectWebSocket, disconnectWebSocket } from './ws';
+import {
+  processNativeChatBadges,
+  processSevenTVChatBadges,
+  refreshVisibleChatBadges,
+} from './chat-badge-injector';
 import {
   initAliasManager,
   onAliasChange,
@@ -19,6 +24,7 @@ import {
   applyAliasesToPinnedChat,
   applyAliasesToAutocomplete,
   applyAliasesToReplyPreviews,
+  applyAliasesToReplyPreviewElement,
   applyAliasesToInlineCallouts,
   applyAliasesToSevenTVPrompts,
   injectCardAliasControls,
@@ -56,22 +62,33 @@ function getCurrentChannel(): string {
 }
 
 const processing = new WeakSet<Element>();
+const ALIASED_SELECTOR = '[data-tsr-aliased]';
 const NAME_SELECTOR = [
   '.chat-author__display-name',
   '.message-author__display-name',
   '.chatter-name',
   '.autocomplete-match-list button[data-a-target^="@"] p',
-  'p span[dir="auto"]',
-  '.seventv-reply-message-part',
   '.seventv-confirm-prompt-body .seventv-chat-user-username',
   '.seventv-chat-user-username',
 ].join(', ');
+const REPLY_PREVIEW_SELECTOR = 'p span[dir="auto"], .seventv-reply-message-part';
+const BATCH_REAPPLY_SELECTOR = [
+  '.pinned-chat__pinned-by',
+  '.autocomplete-match-list',
+  '.inline-private-callout-line__icon',
+  '.seventv-confirm-prompt-body',
+].join(', ');
+let badgeGrantsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function isAliasOwnedMutation(node: Node): boolean {
+  const el = node instanceof Element ? node : node.parentElement;
+  return el?.closest(ALIASED_SELECTOR) != null;
+}
 
 async function handleElement(el: Element): Promise<void> {
   const card = detectCardLogin(el);
   if (!card) return;
 
-  // Keep visible usernames seamless; rating fetch/injection can finish later.
   applyAliasesToViewerCard(card.element, card.login);
 
   if (processing.has(card.element)) return;
@@ -84,7 +101,6 @@ async function handleElement(el: Element): Promise<void> {
     if (rating === null) return;
     await injectBadge(card, rating, channel);
 
-    // Inject edit/reset controls into the card
     injectCardAliasControls(
       card.element,
       card.login,
@@ -100,7 +116,6 @@ async function handleElement(el: Element): Promise<void> {
       },
     );
 
-    // Alias state may arrive while rating is loading; enforce it again after card UI work.
     applyAliasesToViewerCard(card.element, card.login);
   } finally {
     processing.delete(card.element);
@@ -144,47 +159,45 @@ function observe(): void {
       for (const node of mutation.addedNodes) {
         if (!(node instanceof Element)) continue;
 
-        // Cards
         handleElement(node);
         node
           .querySelectorAll('[class*="viewer-card-layer"], .seventv-user-card')
           .forEach((el) => handleElement(el));
 
-        // Chat lines (native)
         if (node.classList.contains('chat-line__message')) {
           newChatLines.add(node);
+          processNativeChatBadges(node, getCurrentChannel());
         }
-        node.querySelectorAll('.chat-line__message').forEach((el) => newChatLines.add(el));
+        node.querySelectorAll('.chat-line__message').forEach((el) => {
+          newChatLines.add(el);
+          processNativeChatBadges(el, getCurrentChannel());
+        });
 
-        // Native message history and other username-only fragments.
         if (node.matches(NAME_SELECTOR)) {
           newChatLines.add(node);
         }
         node.querySelectorAll(NAME_SELECTOR).forEach((el) => newChatLines.add(el));
 
-        // Pinned chat and autocomplete mention tray contain username text outside normal chat lines.
-        if (
-          node.matches('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list') ||
-          node.matches('.inline-private-callout-line__icon') ||
-          node.matches('p span[dir="auto"], .seventv-reply-message-part, .seventv-confirm-prompt-body') ||
-          node.querySelector('.pinned-chat__pinned-by, .chatter-name, .autocomplete-match-list, .inline-private-callout-line__icon, p span[dir="auto"], .seventv-reply-message-part, .seventv-confirm-prompt-body')
-        ) {
+        if (node.matches(REPLY_PREVIEW_SELECTOR)) applyAliasesToReplyPreviewElement(node);
+        node.querySelectorAll(REPLY_PREVIEW_SELECTOR).forEach((el) => applyAliasesToReplyPreviewElement(el));
+
+        if (node.matches(BATCH_REAPPLY_SELECTOR) || node.querySelector(BATCH_REAPPLY_SELECTOR)) {
           scheduleBatchReapply();
         }
 
-        // Chat lines (7TV standalone)
         if (node.classList.contains('seventv-user-message')) {
           const wrapper = node.closest('.chat-line__message');
           if (wrapper) newChatLines.add(wrapper);
           if (!wrapper) newChatLines.add(node);
+          processSevenTVChatBadges(node, getCurrentChannel());
         }
         node.querySelectorAll('.seventv-user-message').forEach((el) => {
           const wrapper = el.closest('.chat-line__message');
           if (wrapper) newChatLines.add(wrapper);
           if (!wrapper) newChatLines.add(el);
+          processSevenTVChatBadges(el, getCurrentChannel());
         });
 
-        // Leaderboard
         if (
           node.matches?.('[data-test-selector="leaderboard-item-name-test-selector"]') ||
           node.matches?.('[class*="channelLeaderboardHeaderRunnerUpEntry__username"], [class*="username--"]') ||
@@ -193,7 +206,6 @@ function observe(): void {
           scheduleBatchReapply();
         }
 
-        // Side nav
         if (
           node.classList?.contains('side-nav-card') ||
           node.querySelector('.side-nav-card')
@@ -202,7 +214,6 @@ function observe(): void {
         }
       }
 
-      // Native card layer children changed (card opened)
       if (
         mutation.type === 'childList' &&
         mutation.target instanceof Element &&
@@ -212,12 +223,12 @@ function observe(): void {
         handleElement(mutation.target as Element);
       }
 
-      // Re-apply aliases inside existing cards when Vue/Twitch re-renders content
       if (mutation.type === 'childList' && mutation.target instanceof Element) {
+        if (isAliasOwnedMutation(mutation.target)) continue;
+
         const card = mutation.target.closest('.seventv-user-card, .viewer-card, [class*="viewer-card-layer"]');
         if (card) cardsToReapply.add(card);
 
-        // Vue may swap text nodes inside username spans — queue the parent line
         const target = mutation.target;
         const isUserNameSpan =
           target.classList?.contains('seventv-chat-user-username') ||
@@ -232,8 +243,9 @@ function observe(): void {
         }
       }
 
-      // Vue edits text nodes directly (textContent / node.data)
       if (mutation.type === 'characterData' && mutation.target instanceof Text) {
+        if (isAliasOwnedMutation(mutation.target)) continue;
+
         const parent = mutation.target.parentElement;
         if (parent) {
           const isUserNameSpan =
@@ -251,7 +263,6 @@ function observe(): void {
       }
     }
 
-    // Process cards that need re-applying (debounce via requestAnimationFrame)
     if (cardsToReapply.size > 0) {
       const cards = Array.from(cardsToReapply);
       cardsToReapply.clear();
@@ -284,7 +295,6 @@ function observe(): void {
       });
     }
 
-    // Batch-apply aliases to new chat lines
     if (newChatLines.size > 0) {
       requestAnimationFrame(() => {
         for (const line of newChatLines) {
@@ -293,7 +303,6 @@ function observe(): void {
       });
     }
 
-    // Re-apply aliases to chat lines whose text nodes were mutated by Vue/React
     if (chatLinesToReapply.size > 0) {
       const lines = Array.from(chatLinesToReapply);
       chatLinesToReapply.clear();
@@ -311,7 +320,22 @@ function observe(): void {
 function initWebSocket(): void {
   const channel = getCurrentChannel();
   if (!channel) return;
-  connectWebSocket(channel, (login, score) => updateBadgeScore(login, score));
+  connectWebSocket(
+    channel,
+    (login, score) => updateBadgeScore(login, score),
+    (updatedChannel) => scheduleBadgeGrantsRefresh(updatedChannel),
+  );
+}
+
+function scheduleBadgeGrantsRefresh(channelLogin: string): void {
+  if (badgeGrantsRefreshTimer) clearTimeout(badgeGrantsRefreshTimer);
+  badgeGrantsRefreshTimer = setTimeout(async () => {
+    badgeGrantsRefreshTimer = null;
+    if (getCurrentChannel() !== channelLogin) return;
+    await refreshChannelBadgeGrants(channelLogin);
+    await refreshVisibleChatBadges(channelLogin);
+    await refreshOpenCardAwards(channelLogin);
+  }, 120);
 }
 
 let lastChannel = '';
@@ -323,6 +347,7 @@ function watchNavigation(): void {
       disconnectWebSocket();
       initWebSocket();
       scheduleBatchReapply();
+      prefetchChannelBadgeGrants(ch).catch(() => {});
     }
   };
   const origPush = history.pushState.bind(history);
@@ -339,7 +364,14 @@ function watchNavigation(): void {
   debug('content', 'startup BACKEND_URL=', (window as any).__BACKEND_URL__ ?? 'n/a');
   await initAliasManager();
 
+  const startChannel = getCurrentChannel();
+  if (startChannel) {
+    prefetchChannelBadgeGrants(startChannel).catch(() => {});
+  }
+
   applyAliasesToAllChat();
+  document.querySelectorAll('.chat-line__message').forEach((el) => processNativeChatBadges(el, getCurrentChannel()));
+  document.querySelectorAll('.seventv-user-message').forEach((el) => processSevenTVChatBadges(el, getCurrentChannel()));
   applyAliasesToOpenCards();
   applyAliasesToPinnedChat();
   applyAliasesToAutocomplete();

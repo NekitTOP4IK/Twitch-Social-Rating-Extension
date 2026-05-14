@@ -4,11 +4,12 @@ import { parseMessage } from './messages';
 import {
   BACKEND_URL,
   getStored, storeTokens, logoutServer,
-  getUserRating, fetchRatingForCard, castVote,
+  getUserRating, fetchRatingForCard, fetchBadgeGrants, castVote,
   getAliases, setAlias, deleteAlias, exportAliases, importAliases, syncAliasesWithServer,
   refreshMe,
   getChannelPermissions, adjustChannelRating,
   getChannelModerators, addChannelModerator, removeChannelModerator,
+  prefetchChannelBadgeGrants, getOrFetchChannelGrantsForLogin, invalidateChannelBadgeGrants,
 } from './shared';
 
 let loginState: string | null = null;
@@ -53,6 +54,22 @@ async function login(): Promise<{ success: boolean; userLogin?: string }> {
   }
 }
 
+async function fetchImageAsDataUrl(url: string): Promise<{ dataUrl: string | null }> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { dataUrl: null };
+    const blob = await res.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ dataUrl: reader.result as string });
+      reader.onerror = () => resolve({ dataUrl: null });
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return { dataUrl: null };
+  }
+}
+
 browser.runtime.onMessage.addListener((message: unknown, sender: browser.Runtime.MessageSender): Promise<unknown> | undefined => {
   const msg = parseMessage(message, sender);
   if (!msg) return Promise.resolve({ ok: false, error: 'bad_request' });
@@ -75,6 +92,15 @@ browser.runtime.onMessage.addListener((message: unknown, sender: browser.Runtime
     case 'FETCH_RATING':
       debug('BG', 'FETCH_RATING login=', msg.login, 'channel=', msg.channelLogin);
       return fetchRatingForCard(msg.login, msg.channelLogin).then((r) => { debug('BG', 'FETCH_RATING ->', r); return r; });
+    case 'FETCH_BADGE_GRANTS':
+      return fetchBadgeGrants(msg.channelLogin, msg.logins);
+    case 'PREFETCH_CHANNEL_BADGE_GRANTS':
+      return prefetchChannelBadgeGrants(msg.channelLogin).then(() => ({ ok: true }));
+    case 'REFRESH_CHANNEL_BADGE_GRANTS':
+      invalidateChannelBadgeGrants(msg.channelLogin);
+      return prefetchChannelBadgeGrants(msg.channelLogin).then(() => ({ ok: true }));
+    case 'GET_CHANNEL_BADGE_GRANTS_FOR_LOGIN':
+      return getOrFetchChannelGrantsForLogin(msg.channelLogin, msg.login);
     case 'CAST_VOTE':
       return castVote(msg.login, msg.channelLogin, msg.value);
     case 'GET_CHANNEL_PERMISSIONS':
@@ -102,6 +128,8 @@ browser.runtime.onMessage.addListener((message: unknown, sender: browser.Runtime
     case 'REFRESH_ME':
       debug('BG', 'REFRESH_ME');
       return refreshMe().then((r) => { debug('BG', 'REFRESH_ME ->', r); return r; });
+    case 'FETCH_IMAGE':
+      return fetchImageAsDataUrl(msg.url);
     default:
       debug('BG', 'unknown message type:', (msg as any).type);
       return undefined;

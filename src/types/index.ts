@@ -1,8 +1,19 @@
 export interface RatingData {
   login: string;
   score: number;
+  swag_score: number;
+  social_score: number;
   isLowRating: boolean;
   enabled?: boolean;
+}
+
+export interface ActiveBadgeGrant {
+  login: string;
+  kind: 'high' | 'low';
+  rank: number;
+  image_url: string | null;
+  title: string;
+  period_label: string;
 }
 
 export interface AuthTokens {

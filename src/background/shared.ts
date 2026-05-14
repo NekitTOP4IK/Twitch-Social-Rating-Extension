@@ -1,5 +1,5 @@
 import browser from 'webextension-polyfill';
-import { ChannelRoleItem } from '../types';
+import { ActiveBadgeGrant, ChannelRoleItem } from '../types';
 import { debug, error } from '../utils/logger';
 
 declare const __BACKEND_URL__: string;
@@ -7,6 +7,7 @@ export const BACKEND_URL = __BACKEND_URL__;
 const API_TIMEOUT_MS = 8_000;
 const LOGOUT_TIMEOUT_MS = 5_000;
 const RATING_CACHE_TTL_MS = 30_000;
+const BADGE_GRANTS_CACHE_TTL_MS = 60_000;
 
 export interface StoredAuth {
   accessToken?: string;
@@ -21,14 +22,26 @@ export interface StoredAliases {
   aliasesSyncedAt?: number;
 }
 
-type CardRating = { login: string; score: number; isLowRating: boolean };
+type CardRating = { login: string; score: number; swag_score: number; social_score: number; isLowRating: boolean };
 
 const ratingCache = new Map<string, { expiresAt: number; value: CardRating }>();
 const ratingInflight = new Map<string, Promise<CardRating | null>>();
+const badgeGrantCache = new Map<string, { expiresAt: number; value: ActiveBadgeGrant[] }>();
+const badgeGrantInflight = new Map<string, Promise<ActiveBadgeGrant[]>>();
+
+const CHANNEL_GRANTS_TTL_MS = 120_000; // 2 min
+const channelGrantsMap = new Map<string, { expiresAt: number; byLogin: Map<string, ActiveBadgeGrant[]> }>();
+const channelGrantsInflight = new Map<string, Promise<void>>();
 
 function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   return `${BACKEND_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function absoluteUrl(url: string | null): string | null {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${new URL(BACKEND_URL).origin}${url.startsWith('/') ? url : `/${url}`}`;
 }
 
 async function apiFetch(path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS): Promise<Response> {
@@ -48,13 +61,17 @@ function ratingCacheKey(channelLogin: string, login: string): string {
 function setRatingCache(channelLogin: string, login: string, score: number): void {
   ratingCache.set(ratingCacheKey(channelLogin, login), {
     expiresAt: Date.now() + RATING_CACHE_TTL_MS,
-    value: { login: login.toLowerCase(), score, isLowRating: score < 0 },
+    value: { login: login.toLowerCase(), score, swag_score: score, social_score: 0, isLowRating: score < 0 },
   });
 }
 
 function clearAuthCaches(): void {
   ratingCache.clear();
   ratingInflight.clear();
+  badgeGrantCache.clear();
+  badgeGrantInflight.clear();
+  channelGrantsMap.clear();
+  channelGrantsInflight.clear();
 }
 
 export async function getStored(): Promise<StoredAuth & StoredAliases> {
@@ -116,10 +133,11 @@ async function doRefresh(): Promise<string | null> {
     if (res.status === 401) { await clearTokens(); return null; }
     if (!res.ok) return null;
     const data = await res.json();
+    const expiresIn = Number(data.expires_in ?? 900);
     await browser.storage.local.set({
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
-      expiresAt: Date.now() + 900_000,
+      expiresAt: Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 900_000),
     });
     debug('shared', 'doRefresh success');
     return data.access_token as string;
@@ -165,7 +183,7 @@ export async function refreshMe(): Promise<{ ok: boolean; avatarUrl?: string; lo
   }
 }
 
-export async function getUserRating(channelLogin: string): Promise<{ score?: number } | null> {
+export async function getUserRating(channelLogin: string): Promise<{ score?: number; swag_score?: number; social_score?: number } | null> {
   const { userLogin } = await getStored();
   if (!userLogin) return null;
   try {
@@ -175,7 +193,10 @@ export async function getUserRating(channelLogin: string): Promise<{ score?: num
       error('shared', 'getUserRating failed:', res.status, url);
       return null;
     }
-    return { score: (await res.json()).score };
+    const data = await res.json();
+    const swagScore = Number(data.swag_score ?? data.score ?? 0);
+    const socialScore = Number(data.social_score ?? 0);
+    return { score: swagScore, swag_score: swagScore, social_score: socialScore };
   } catch (e) {
     error('shared', 'getUserRating network error:', e);
     return null;
@@ -203,9 +224,10 @@ export async function fetchRatingForCard(
       }
       const data = await res.json();
       if (data.enabled === false) return null;
-      const score = Number(data.score);
+      const score = Number(data.swag_score ?? data.score);
+      const socialScore = Number(data.social_score ?? 0);
       if (typeof data.login !== 'string' || !Number.isSafeInteger(score)) return null;
-      const value = { login: data.login, score, isLowRating: score < 0 };
+      const value = { login: data.login, score, swag_score: score, social_score: socialScore, isLowRating: score < 0 };
       ratingCache.set(key, { expiresAt: Date.now() + RATING_CACHE_TTL_MS, value });
       return value;
     } catch (e) {
@@ -245,8 +267,9 @@ export async function castVote(
       return { ok: false, error: err.detail ?? String(res.status) };
     }
     const data = await res.json();
-    if (Number.isSafeInteger(data.score)) setRatingCache(channelLogin, login, data.score);
-    return { ok: true, score: data.score, nextVoteAt: data.next_vote_at };
+    const score = Number(data.swag_score ?? data.score);
+    if (Number.isSafeInteger(score)) setRatingCache(channelLogin, login, score);
+    return { ok: true, score, nextVoteAt: data.next_vote_at };
   } catch (e) {
     error('shared', 'castVote error:', e);
     return { ok: false, error: 'network_error' };
@@ -300,11 +323,133 @@ export async function adjustChannelRating(
       return { ok: false, error: err.detail ?? String(res.status) };
     }
     const data = await res.json();
-    if (Number.isSafeInteger(data.score)) setRatingCache(channelLogin, login, data.score);
-    return { ok: true, score: data.score };
+    const score = Number(data.swag_score ?? data.score);
+    if (Number.isSafeInteger(score)) setRatingCache(channelLogin, login, score);
+    return { ok: true, score };
   } catch (e) {
     error('shared', 'adjustChannelRating error:', e);
     return { ok: false, error: 'network_error' };
+  }
+}
+
+export async function fetchBadgeGrants(
+  channelLogin: string,
+  logins: string[],
+): Promise<ActiveBadgeGrant[]> {
+  const normalizedLogins = Array.from(new Set(logins.map((login) => login.trim().toLowerCase()).filter(Boolean))).sort();
+  if (normalizedLogins.length === 0) return [];
+  const key = `${channelLogin.trim().toLowerCase()}:${normalizedLogins.join(',')}`;
+  const cached = badgeGrantCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const existing = badgeGrantInflight.get(key);
+  if (existing) return existing;
+
+  const request = (async (): Promise<ActiveBadgeGrant[]> => {
+    try {
+      const params = new URLSearchParams({ users: normalizedLogins.join(',') });
+      const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/badge-grants?${params.toString()}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (!Array.isArray(data)) return [];
+      const grants = data
+        .filter((item) => typeof item?.login === 'string' && (item.kind === 'high' || item.kind === 'low') && Number.isSafeInteger(item.rank))
+        .map((item) => ({
+          login: item.login.toLowerCase(),
+          kind: item.kind,
+          rank: item.rank,
+          image_url: absoluteUrl(typeof item.image_url === 'string' ? item.image_url : null),
+          title: typeof item.title === 'string' ? item.title : `Топ-${item.rank} чатер на канале`,
+          period_label: typeof item.period_label === 'string' ? item.period_label : '',
+        })) as ActiveBadgeGrant[];
+      badgeGrantCache.set(key, { expiresAt: Date.now() + BADGE_GRANTS_CACHE_TTL_MS, value: grants });
+      return grants;
+    } catch (e) {
+      error('shared', 'fetchBadgeGrants error:', e);
+      return [];
+    } finally {
+      badgeGrantInflight.delete(key);
+    }
+  })();
+
+  badgeGrantInflight.set(key, request);
+  return request;
+}
+
+export async function prefetchChannelBadgeGrants(channelLogin: string): Promise<void> {
+  const key = channelLogin.trim().toLowerCase();
+  const cached = channelGrantsMap.get(key);
+  if (cached && cached.expiresAt > Date.now()) return;
+
+  const existing = channelGrantsInflight.get(key);
+  if (existing) return existing;
+
+  const request = (async (): Promise<void> => {
+    try {
+      const res = await apiFetch(`/channels/${encodeURIComponent(channelLogin)}/badge-grants`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data)) return;
+      const byLogin = new Map<string, ActiveBadgeGrant[]>();
+      for (const item of data) {
+        if (typeof item?.login !== 'string') continue;
+        if (item.kind !== 'high' && item.kind !== 'low') continue;
+        if (!Number.isSafeInteger(item.rank)) continue;
+        const grant: ActiveBadgeGrant = {
+          login: item.login.toLowerCase(),
+          kind: item.kind,
+          rank: item.rank,
+          image_url: absoluteUrl(typeof item.image_url === 'string' ? item.image_url : null),
+          title: typeof item.title === 'string' ? item.title : `Топ-${item.rank} чатер на канале`,
+          period_label: typeof item.period_label === 'string' ? item.period_label : '',
+        };
+        const existing = byLogin.get(grant.login) ?? [];
+        existing.push(grant);
+        byLogin.set(grant.login, existing);
+      }
+      channelGrantsMap.set(key, { expiresAt: Date.now() + CHANNEL_GRANTS_TTL_MS, byLogin });
+    } catch (e) {
+      error('shared', 'prefetchChannelBadgeGrants error:', e);
+    } finally {
+      channelGrantsInflight.delete(key);
+    }
+  })();
+
+  channelGrantsInflight.set(key, request);
+  return request;
+}
+
+export function getChannelGrantsForLogin(channelLogin: string, login: string): ActiveBadgeGrant[] {
+  const key = channelLogin.trim().toLowerCase();
+  const cached = channelGrantsMap.get(key);
+  if (!cached || cached.expiresAt <= Date.now()) return [];
+  return cached.byLogin.get(login.trim().toLowerCase()) ?? [];
+}
+
+export async function getOrFetchChannelGrantsForLogin(
+  channelLogin: string,
+  login: string,
+): Promise<ActiveBadgeGrant[]> {
+  await prefetchChannelBadgeGrants(channelLogin);
+  return getChannelGrantsForLogin(channelLogin, login);
+}
+
+export function invalidateChannelBadgeGrants(channelLogin?: string): void {
+  if (!channelLogin) {
+    badgeGrantCache.clear();
+    badgeGrantInflight.clear();
+    channelGrantsMap.clear();
+    channelGrantsInflight.clear();
+    return;
+  }
+
+  const key = channelLogin.trim().toLowerCase();
+  channelGrantsMap.delete(key);
+  channelGrantsInflight.delete(key);
+  for (const cacheKey of Array.from(badgeGrantCache.keys())) {
+    if (cacheKey.startsWith(`${key}:`)) badgeGrantCache.delete(cacheKey);
+  }
+  for (const inflightKey of Array.from(badgeGrantInflight.keys())) {
+    if (inflightKey.startsWith(`${key}:`)) badgeGrantInflight.delete(inflightKey);
   }
 }
 

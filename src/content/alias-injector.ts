@@ -17,7 +17,6 @@ const tokenTextOriginals = new WeakMap<Text, string>();
 // ── Core rewrite helpers ─────────────────────────────────────────────────────
 
 function getTextNode(element: Element): Text | null {
-  // Walk down through single meaningful children (skip comment/empty text nodes)
   let current: Node = element;
   while (true) {
     const meaningful = Array.from(current.childNodes).filter(
@@ -90,7 +89,7 @@ function rewriteText(element: Element, login: string): void {
     textNode.textContent = alias;
   }
   element.setAttribute(ALIASED_ATTR, 'true');
-  element.setAttribute('title', normalizedLogin); // browser-native tooltip with original login
+  element.setAttribute('title', normalizedLogin);
 }
 
 function getHrefLogin(element: Element): string | null {
@@ -205,7 +204,8 @@ function rewriteMentionElement(element: Element): void {
   }
 
   if (!element.hasAttribute(ORIGINAL_ATTR)) element.setAttribute(ORIGINAL_ATTR, original);
-  textNode.textContent = `@${alias}`;
+  const next = `@${alias}`;
+  if (textNode.textContent !== next) textNode.textContent = next;
   element.setAttribute(ALIASED_ATTR, 'true');
   element.setAttribute('title', `@${login}`);
 }
@@ -231,7 +231,8 @@ function rewriteReplyTextElement(element: Element): void {
   }
 
   if (!element.hasAttribute(ORIGINAL_ATTR)) element.setAttribute(ORIGINAL_ATTR, original);
-  textNode.textContent = `${m[1]}@${alias}${m[3]}`;
+  const next = `${m[1]}@${alias}${m[3]}`;
+  if (textNode.textContent !== next) textNode.textContent = next;
   element.setAttribute(ALIASED_ATTR, 'true');
   element.setAttribute('title', `@${login}`);
 }
@@ -286,7 +287,6 @@ function getLoginFromMessage(line: Element): string | null {
   const selfLogin = line.getAttribute('data-a-user');
   if (selfLogin) return selfLogin.toLowerCase();
 
-  // 7TV timeline messages inside a user card have no .chat-line__message wrapper
   const card = line.closest('.seventv-user-card');
   if (card) {
     const detected = detectCardLogin(card);
@@ -374,13 +374,24 @@ export function applyAliasesToAutocomplete(): void {
 
 export function applyAliasesToReplyPreviews(): void {
   document.querySelectorAll('p span[dir="auto"]').forEach((span) => {
-    const text = getElementText(span);
-    if (/^@[a-zA-Z0-9_]+$/.test(text)) rewriteMentionElement(span);
+    applyAliasesToReplyPreviewElement(span);
   });
 
   document.querySelectorAll('.seventv-reply-message-part').forEach((el) => {
-    rewriteReplyTextElement(el);
+    applyAliasesToReplyPreviewElement(el);
   });
+}
+
+export function applyAliasesToReplyPreviewElement(element: Element): void {
+  if (element.matches('p span[dir="auto"]')) {
+    const text = getElementText(element);
+    if (/^@[a-zA-Z0-9_]+$/.test(text)) rewriteMentionElement(element);
+    return;
+  }
+
+  if (element.matches('.seventv-reply-message-part')) {
+    rewriteReplyTextElement(element);
+  }
 }
 
 export function applyAliasesToInlineCallouts(): void {
@@ -425,7 +436,6 @@ export function applyAliasesToAllChat(): void {
     } else {
       const card = msg.closest('.seventv-user-card');
       if (card) {
-        // Timeline message inside a 7TV user card — derive login from the card header
         const detected = detectCardLogin(card);
         if (detected) {
           applyAliasesToSevenTVMentionTokens(msg);
@@ -433,7 +443,6 @@ export function applyAliasesToAllChat(): void {
           if (nameEl && !nameEl.closest('.mention-token')) rewriteText(nameEl, detected.login);
         }
       } else {
-        // Other standalone 7TV message (not in a card) — best-effort
         const userBlock = msg.querySelector('.seventv-chat-user');
         if (userBlock) {
           const nameEl = userBlock.querySelector('.seventv-chat-user-username');
@@ -461,7 +470,6 @@ export function applyAliasesToViewerCard(cardEl: Element, login: string): void {
     if (nameEl) rewriteText(nameEl, login);
   }
 
-  // 7TV card timeline messages (message history inside the card)
   const timelineList = cardEl.querySelector('.seventv-user-card-message-timeline-list');
   if (timelineList) {
     applyAliasesToSevenTVMentionTokens(timelineList);
@@ -528,7 +536,7 @@ export function applyAliasesToLeaderboard(): void {
       if (!textNode) continue;
       const original = strong.getAttribute(ORIGINAL_ATTR) ?? textNode.textContent ?? '';
       if (!strong.hasAttribute(ORIGINAL_ATTR)) strong.setAttribute(ORIGINAL_ATTR, original);
-      textNode.textContent = alias;
+      if (textNode.textContent !== alias) textNode.textContent = alias;
       strong.setAttribute(ALIASED_ATTR, 'true');
       strong.setAttribute('title', login);
     }
@@ -609,12 +617,9 @@ function showInlineAliasForm(
 ): void {
   if (btnWrap.querySelector('[data-tsr-alias-input]')) return;
 
-  // Hide existing icon buttons while editing
   const icons = Array.from(btnWrap.querySelectorAll<HTMLElement>('button'));
   icons.forEach((b) => { b.style.display = 'none'; });
 
-  // Block all pointer events on the entire form wrapper so the parent <a>
-  // (seventv-user-card-usertag) never receives mousedown/pointerdown/click.
   const blockEvent = (e: Event) => { e.stopPropagation(); e.preventDefault(); };
   for (const ev of ['mousedown', 'pointerdown', 'click'] as const) {
     btnWrap.addEventListener(ev, blockEvent);

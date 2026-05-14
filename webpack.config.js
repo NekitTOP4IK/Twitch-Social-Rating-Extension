@@ -85,7 +85,7 @@ module.exports = (env = {}) => {
             from: manifestFile,
             to: 'manifest.json',
             transform(content) {
-              return content
+              let manifest = content
                 .toString()
                 .replace(/__VERSION__/g, version)
                 .replace(/__BACKEND_URL__/g, backendUrl)
@@ -93,6 +93,14 @@ module.exports = (env = {}) => {
                 .replace(/__BACKEND_ORIGIN__/g, backendOrigin)
                 .replace(/__WS_BACKEND_ORIGIN__/g, wsBackendOrigin)
                 .replace(/__FIREFOX_UPDATE_URL__/g, firefoxUpdateUrl);
+              if (!isProd && isFirefox) {
+                const parsed = JSON.parse(manifest);
+                if (parsed.browser_specific_settings?.gecko) {
+                  delete parsed.browser_specific_settings.gecko.update_url;
+                }
+                manifest = JSON.stringify(parsed, null, 2);
+              }
+              return manifest;
             },
           },
           { from: 'src/popup/popup.html', to: 'popup.html' },

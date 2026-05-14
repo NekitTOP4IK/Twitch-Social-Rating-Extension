@@ -35,8 +35,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "twitch-social-rating@socialrating.app",
-      "update_url": "__FIREFOX_UPDATE_URL__",
-      "strict_min_version": "109.0"
+      "update_url": "__FIREFOX_UPDATE_URL__"
     }
   },
   "content_security_policy": "script-src 'self'; object-src 'self'; connect-src 'self' __BACKEND_ORIGIN__ __WS_BACKEND_ORIGIN__",

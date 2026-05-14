@@ -16,6 +16,7 @@ interface PopupState {
   working: boolean;
   channelLogin: string | null;
   channelRating: number | null;
+  channelSocialScore: number | null;
   ratingLoading: boolean;
 }
 
@@ -177,6 +178,24 @@ const S: Record<string, React.CSSProperties> = {
     color: C.textMuted,
     lineHeight: 1,
   },
+  // ── Metrics row (swag + social) ──────────────────────────────────────────────────────────────
+  metricsRow: {
+    display: 'flex',
+    gap: 10,
+  },
+  metricCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  metricLabel: {
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    color: C.textMuted,
+    marginBottom: 3,
+    lineHeight: 1,
+  },
   // ── No channel hint ──────────────────────────────────────────────────────────────────────────
   noChannel: {
     fontSize: 12,
@@ -334,6 +353,12 @@ function ratingBorderColor(score: number): string {
   return C.borderStrong;
 }
 
+function effectiveBorderColor(swag: number | null, social: number | null): string {
+  if (swag !== null && swag !== 0) return ratingBorderColor(swag);
+  if (social !== null && social !== 0) return ratingBorderColor(social);
+  return C.borderStrong;
+}
+
 function ratingText(score: number): string {
   if (score > 0) return `+${score}`;
   return `${score}`;
@@ -375,6 +400,7 @@ function Popup() {
     working: false,
     channelLogin: null,
     channelRating: null,
+    channelSocialScore: null,
     ratingLoading: false,
   });
 
@@ -395,25 +421,29 @@ function Popup() {
         .catch((e: any) => { error('popup', 'GET_AUTH error:', e); return { authenticated: false, userLogin: null, avatarUrl: null }; })) as AuthState;
       debug('popup', 'GET_AUTH ->', auth);
 
+      const [refresh, tabs] = await Promise.all([
+        auth.authenticated
+          ? (browser.runtime
+              .sendMessage({ type: 'REFRESH_ME' })
+              .catch(() => ({ ok: false })) as Promise<{ ok: boolean; avatarUrl?: string; login?: string; error?: string }>)
+          : Promise.resolve({ ok: false } as { ok: boolean; avatarUrl?: string; login?: string; error?: string }),
+        browser.tabs.query({ active: true, currentWindow: true }).catch(() => [] as browser.Tabs.Tab[]),
+      ]);
+
       let currentAuth = auth;
-      if (currentAuth.authenticated) {
-        const refresh = (await browser.runtime
-          .sendMessage({ type: 'REFRESH_ME' })
-          .catch(() => ({ ok: false }))) as { ok: boolean; avatarUrl?: string; login?: string; error?: string };
-        if (refresh.ok) {
-          currentAuth = {
-            ...currentAuth,
-            avatarUrl: refresh.avatarUrl ?? currentAuth.avatarUrl,
-            userLogin: refresh.login ?? currentAuth.userLogin,
-          };
-        } else if (refresh.error === 'not_authenticated') {
-          currentAuth = { authenticated: false, userLogin: null, avatarUrl: null };
-        }
+      if (refresh.ok) {
+        currentAuth = {
+          ...currentAuth,
+          avatarUrl: refresh.avatarUrl ?? currentAuth.avatarUrl,
+          userLogin: refresh.login ?? currentAuth.userLogin,
+        };
+      } else if (refresh.error === 'not_authenticated') {
+        currentAuth = { authenticated: false, userLogin: null, avatarUrl: null };
       }
 
       let channelLogin: string | null = null;
       try {
-        const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+        const [tab] = tabs;
         if (tab?.url) channelLogin = extractChannelLogin(tab.url);
       } catch { /* noop */ }
       debug('popup', 'channelLogin=', channelLogin);
@@ -440,10 +470,15 @@ function Popup() {
         debug('popup', 'GET_USER_RATING channel=', channelLogin);
         const res = (await browser.runtime
           .sendMessage({ type: 'GET_USER_RATING', channelLogin })
-          .catch((e: any) => { error('popup', 'GET_USER_RATING error:', e); return null; })) as { score?: number } | null;
+          .catch((e: any) => { error('popup', 'GET_USER_RATING error:', e); return null; })) as { score?: number; swag_score?: number; social_score?: number } | null;
         debug('popup', 'GET_USER_RATING ->', res);
         if (cancelled) return;
-        setState((p) => ({ ...p, channelRating: res?.score ?? null, ratingLoading: false }));
+        setState((p) => ({
+          ...p,
+          channelRating: res?.swag_score ?? res?.score ?? null,
+          channelSocialScore: res?.social_score ?? null,
+          ratingLoading: false,
+        }));
       }
     })();
     return () => { cancelled = true; };
@@ -571,7 +606,7 @@ function Popup() {
     }
   };
 
-  const { auth, loading, working, channelLogin, channelRating, ratingLoading } = state;
+  const { auth, loading, working, channelLogin, channelRating, channelSocialScore, ratingLoading } = state;
   const aliasCount = Object.keys(aliases).length;
   const syncDotColor =
     syncStatus === 'synced' ? C.green : syncStatus === 'error' ? C.ratingNeg : C.amber;
@@ -651,28 +686,34 @@ function Popup() {
                 <div
                   style={{
                     ...S.ratingCard,
-                    borderLeftColor:
-                      channelRating !== null
-                        ? ratingBorderColor(channelRating)
-                        : C.borderStrong,
+                    borderLeftColor: effectiveBorderColor(channelRating, channelSocialScore),
                   }}
                 >
-                  <div style={S.ratingLabel}>Рейтинг</div>
+                  <div style={S.ratingLabel}>Рейтинг на канале</div>
                   <div style={S.ratingChannel}>{channelLogin}</div>
-                  <div
-                    style={{
-                      ...S.ratingNumber,
-                      color:
-                        channelRating !== null
-                          ? ratingFg(channelRating)
-                          : C.textMuted,
-                    }}
-                  >
-                    {ratingLoading
-                      ? '—'
-                      : channelRating !== null
-                      ? ratingText(channelRating)
-                      : '—'}
+                  <div style={S.metricsRow}>
+                    <div style={S.metricCol}>
+                      <div style={S.metricLabel}>Свагометр</div>
+                      <div
+                        style={{
+                          ...S.ratingNumber,
+                          color: channelRating !== null ? ratingFg(channelRating) : C.textMuted,
+                        }}
+                      >
+                        {ratingLoading ? '—' : channelRating !== null ? ratingText(channelRating) : '—'}
+                      </div>
+                    </div>
+                    <div style={S.metricCol}>
+                      <div style={S.metricLabel}>Соц. рейтинг</div>
+                      <div
+                        style={{
+                          ...S.ratingNumber,
+                          color: channelSocialScore !== null ? ratingFg(channelSocialScore) : C.textMuted,
+                        }}
+                      >
+                        {ratingLoading ? '—' : channelSocialScore !== null ? ratingText(channelSocialScore) : '—'}
+                      </div>
+                    </div>
                   </div>
                   <div style={S.ratingSubtext}>
                     {ratingLoading ? 'Загрузка…' : 'твой рейтинг на канале'}
